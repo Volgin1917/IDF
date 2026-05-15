@@ -1,0 +1,15 @@
+[package]
+name = "ice-data-nhl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ice-data-core = { path = "../ice-data-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }

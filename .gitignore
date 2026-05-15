@@ -1,0 +1,9 @@
+/target
+.env
+*.log
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+chatbot/__pycache__/
+chatbot/.venv/
+bot.session

@@ -1,0 +1,17 @@
+[package]
+name = "ice-data-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ice-data-core = { path = "../ice-data-core" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { version = "3", features = ["json"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }

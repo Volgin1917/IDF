@@ -1,0 +1,135 @@
+{
+  "name": "ICE DATA — News Collection (Hourly)",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000001",
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000002",
+      "name": "Fetch NHL News 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 200],
+      "parameters": {
+        "url": "https://api-web.nhle.com/v1/news/now?limit=20",
+        "options": {},
+        "method": "GET",
+        "authentication": "none",
+        "sendBody": false,
+        "sendHeaders": false,
+        "headerParameters": { "parameters": [] }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000003",
+      "name": "Transform News Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "parameters": {
+        "jsCode": "const newsItems = $input.all();\n// Accumulate articles from all source calls\nconst articles = [];\nfor (const batch of newsItems) {\n  const data = batch.json;\n  // NHL API returns articles under various keys\n  const items = data.articles || data.news || [];\n  for (const item of items) {\n    articles.push({\n      json: {\n        title: item.headline || item.title || 'NHL Update',\n        url: item.url || `https://nhl.com/news/${item.id}`,\n        source: 'NHL.com',\n        published_at: item.publishDate || new Date().toISOString(),\n        summary: item.preview || item.seoDescription || '',\n        category: item.category || 'general',\n        player_ids: (item.relatedContent?.players || []).map(p => p.id)\n      }\n    });\n  }\n}\nreturn articles.length > 0 ? articles : [{ json: { empty: true } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000004",
+      "name": "Has News Items?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.empty }}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000005",
+      "name": "Aggregate & POST",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 200],
+      "parameters": {
+        "jsCode": "const allItems = $input.all().map(i => ({\n  title: i.json.title,\n  url: i.json.url,\n  source: i.json.source,\n  published_at: i.json.published_at,\n  summary: i.json.summary,\n  category: i.json.category,\n  player_ids: i.json.player_ids || []\n}));\nreturn [{ json: { news: allItems } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000006",
+      "name": "POST to API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 200],
+      "parameters": {
+        "url": "={{ $env.API_BASE_URL }}/v1/webhook/collect-news",
+        "options": {},
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [] },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.API_KEY }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-0001-0000-000000000007",
+      "name": "No News",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "a1b2c3d4-0004-0001-0000-000000000001": {
+      "main": [[
+        { "node": "a1b2c3d4-0004-0001-0000-000000000002", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0004-0001-0000-000000000002": {
+      "main": [[
+        { "node": "a1b2c3d4-0004-0001-0000-000000000003", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0004-0001-0000-000000000003": {
+      "main": [[
+        { "node": "a1b2c3d4-0004-0001-0000-000000000004", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0004-0001-0000-000000000004": {
+      "main": [
+        [{ "node": "a1b2c3d4-0004-0001-0000-000000000005", "type": "main", "index": 0 }],
+        [{ "node": "a1b2c3d4-0004-0001-0000-000000000007", "type": "main", "index": 0 }]
+      ]
+    },
+    "a1b2c3d4-0004-0001-0000-000000000005": {
+      "main": [[
+        { "node": "a1b2c3d4-0004-0001-0000-000000000006", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["ice-data", "news"]
+}

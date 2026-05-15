@@ -1,0 +1,3570 @@
+# ICE DATA FORGE
+## Техническая спецификация и архитектурное описание
+
+**Версия документа:** 1.0  
+**Дата:** 15 мая 2026  
+**Статус:** Утверждено к разработке
+
+---
+
+## Содержание
+
+1. [Обзор проекта](#1-обзор-проекта)
+2. [Архитектурные принципы](#2-архитектурные-принципы)
+3. [Высокоуровневая архитектура](#3-высокоуровневая-архитектура)
+4. [Компоненты системы](#4-компоненты-системы)
+5. [Потоки данных](#5-потоки-данных)
+6. [Спецификация API](#6-спецификация-api)
+7. [Схема базы данных](#7-схема-базы-данных)
+8. [Интеграции](#8-интеграции)
+9. [Развертывание и инфраструктура](#9-развертывание-и-инфраструктура)
+10. [Безопасность](#10-безопасность)
+11. [Мониторинг и логирование](#11-мониторинг-и-логирование)
+
+---
+
+## 1. Обзор проекта
+
+### 1.1. Назначение системы
+
+Hockey Analytics Platform — это комплексная система для автоматизированного анализа хоккейных игроков на основе открытых данных NHL API с применением искусственного интеллекта для оценки потенциала, сильных и слабых сторон игроков.
+
+### 1.2. Цели и задачи
+
+**Основные цели:**
+- Автоматический сбор и агрегация статистики игроков из NHL API
+- Расчет продвинутых метрик (xG, Corsi, Fenwick, zone entries)
+- AI-анализ игроков с оценкой потенциала развития
+- Предоставление данных через веб-дашборд и чат-боты
+- Интеграция с внешними системами через стандартизированные API
+
+**Ключевые функции:**
+1. Поиск игроков по имени с автодополнением
+2. Просмотр детальной статистики за сезон/карьеру
+3. AI-генерация аналитических отчетов
+4. Сравнение игроков между собой
+5. Прогнозирование развития карьеры
+6. Уведомления о значимых событиях (травмы, контракты)
+
+### 1.3. Целевая аудитория
+
+- Скауты хоккейных клубов
+- Спортивные аналитики и журналисты
+- Фанаты хоккея с углубленным интересом к статистике
+- Агенты игроков
+- Тренерский штаб
+
+---
+
+## 2. Архитектурные принципы
+
+### 2.1. Основные принципы проектирования
+
+**Микросервисная архитектура:**
+- Каждый компонент независим и масштабируется отдельно
+- Четкое разделение ответственности между сервисами
+- Слабая связанность через стандартизированные интерфейсы
+
+**Event-Driven подход:**
+- Асинхронная обработка данных
+- Событийная модель для триггеров анализа
+- Очереди сообщений для надежной доставки
+
+**API-First:**
+- Все функции доступны через API
+- RESTful принципы для HTTP-эндпоинтов
+- MCP (Model Context Protocol) для AI-агентов
+
+**Data-Centric:**
+- PostgreSQL как единый источник правды
+- JSONB для гибких схем данных
+- Кэширование на нескольких уровнях
+
+### 2.2. Технологический стек
+
+| Компонент | Технология | Обоснование |
+|-----------|------------|-------------|
+| **Backend** | Rust (Tokio, Axum) | Производительность, безопасность памяти, async/await |
+| **База данных** | PostgreSQL 15+ | JSONB, надежность, ACID |
+| **ORM** | sqlx | Compile-time проверка SQL, async |
+| **AI Оркестрация** | n8n | Визуальный workflow, вебхуки |
+| **AI Модель** | OpenClaw | Локальный LLM, контроль данных |
+| **MCP Сервер** | Rust + MCP SDK | Стандарт для AI-агентов |
+| **Чат-бот** | Telegram Bot API | Массовость, простота интеграции |
+| **Дашборд** | React/Vue + Rust API | Интерактивность, производительность |
+| **Контейнеризация** | Docker + Docker Compose | Переносимость, простота развертывания |
+
+---
+
+## 3. Высокоуровневая архитектура
+
+### 3.1. Диаграмма компонентов
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         CLIENT LAYER                                 │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│   Web Dashboard │   ChatBot       │   MCP Clients   │   External    │
+│   (React/Vue)   │   (Telegram)    │   (Claude, etc) │   APIs        │
+└────────────────┴────────────────┴────────────────┴──────────────┘
+         │                 │                 │                │
+         │ HTTPS/REST      │ HTTPS/REST      │ SSE/MCP        │ Webhooks
+         ▼                 ▼                 ▼                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      APPLICATION LAYER                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                         API GATEWAY                                  │
+│              (Rust Backend - Axum Web Server)                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────┐  │
+│  │ Auth        │  │ Rate        │  │ Request     │  │ CORS &    │  │
+│  │ Middleware  │  │ Limiting    │  │ Validation  │  │ Security  │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └───────────┘  │
+├─────────────────────────────────────────────────────────────────────┤
+│                    BUSINESS LOGIC LAYER                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────┐  │
+│  │ Player      │  │ Statistics  │  │ Analytics   │  │ AI        │  │
+│  │ Service     │  │ Service     │  │ Engine      │  │ Client    │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └───────────┘  │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │ NHL API     │  │ Cache       │  │ Notification│                 │
+│  │ Client      │  │ Manager     │  │ Service     │                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                    MCP SERVER (SSE Transport)                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │ get_player  │  │ analyze_    │  │ compare_    │                 │
+│  │ tool        │  │ player tool │  │ players tool│                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+└────────┬────────────────────────────────┬──────────────────────────┘
+         │                │                │
+         │ SQL (sqlx)     │ Events         │ HTTP/Webhooks
+         ▼                ▼                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      DATA LAYER                                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                    PostgreSQL Database                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │ Players     │  │ Season      │  │ AI Analysis │                 │
+│  │ Table       │  │ Stats Table │  │ Table       │                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                 │
+│  │ News &      │  │ System      │  │ Audit       │                 │
+│  │ Events      │  │ Config      │  │ Log         │                 │
+│  └─────────────┘  └─────────────┘  └─────────────┘                 │
+└─────────────────────────────────────────────────────────────────────┘
+         │                │                │
+         │ HTTP/REST      │ Webhooks       │ Triggers
+         ▼                ▼                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                  INTEGRATION LAYER                                   │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│   NHL API       │   n8n Workflow  │   OpenClaw      │   External    │
+│   (api-web.nhl) │   Automation    │   AI Engine     │   News APIs   │
+└─────────────────┴─────────────────┴─────────────────┴───────────────┘
+```
+
+### 3.2. Уровни архитектуры
+
+**Level 1: Client Layer (Клиентский уровень)**
+- Веб-интерфейс для аналитиков
+- Чат-боты для мобильных пользователей
+- MCP-клиенты для AI-агентов
+- Внешние системы через вебхуки
+
+**Level 2: Application Layer (Прикладной уровень)**
+- API Gateway на Rust/Axum
+- Бизнес-логика в виде сервисов
+- MCP Server для AI-интеграций
+- Middleware для безопасности и валидации
+
+**Level 3: Data Layer (Уровень данных)**
+- PostgreSQL как основное хранилище
+- Кэширование в памяти (Redis опционально)
+- Full-text search через PostgreSQL
+
+**Level 4: Integration Layer (Интеграционный уровень)**
+- NHL API для получения статистики
+- n8n для оркестрации workflows
+- OpenClaw для AI-анализа
+- Внешние источники новостей
+
+---
+
+## 4. Компоненты системы
+
+### 4.1. Rust Backend (API Gateway)
+
+**Назначение:** Центральный компонент, обрабатывающий все входящие HTTP-запросы, координирующий работу сервисов и обеспечивающий интеграцию с базой данных.
+
+**Технологии:**
+- Rust (версия 1.75+)
+- Фреймворк: Axum
+- Runtime: Tokio (async)
+- HTTP клиент: reqwest
+- Сериализация: serde + serde_json
+- Валидация: validator
+
+**Основные модули:**
+
+1. **HTTP Server (Axum)**
+   - REST API эндпоинты
+   - WebSocket/SSE для real-time обновлений
+   - CORS настройки
+   - Compression (gzip/br)
+
+2. **Middleware Stack**
+   - Authentication (JWT/OAuth2)
+   - Rate Limiting (token bucket)
+   - Request/Response logging
+   - Error handling & recovery
+   - Request ID tracking
+
+3. **Player Service**
+   - Поиск игроков (fuzzy search)
+   - CRUD операции
+   - Валидация данных
+   - Кэширование частых запросов
+
+4. **Statistics Service**
+   - Сбор статистики из NHL API
+   - Нормализация данных
+   - Расчет производных метрик
+   - Агрегация по периодам
+
+5. **Analytics Engine**
+   - Расчет продвинутых метрик:
+     - Expected Goals (xG)
+     - Corsi/Fenwick
+     - Zone Entry/Exit
+     - Shot Quality
+     - Player Impact Estimate
+   - Сравнительный анализ
+   - Выявление паттернов
+
+6. **NHL API Client**
+   - Интеграция с api-web.nhle.com
+   - Retry логика с exponential backoff
+   - Rate limiting соблюдение
+   - Response кэширование
+   - Error handling
+
+7. **Cache Manager**
+   - In-memory кэш (Tokio Mutex)
+   - TTL управление
+   - Cache invalidation стратегии
+   - Статистика hit/miss
+
+8. **Notification Service**
+   - Email уведомления
+   - Webhook dispatch
+   - Queue management
+
+**Конфигурация:**
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8080
+  workers: 4
+  
+database:
+  url: postgresql://user:pass@localhost:5432/hockey_analytics
+  max_connections: 20
+  min_connections: 5
+  
+cache:
+  ttl_seconds: 300
+  max_size_mb: 512
+  
+nhl_api:
+  base_url: https://api-web.nhle.com/v1
+  rate_limit_per_minute: 60
+  timeout_seconds: 30
+  
+jwt:
+  secret: ${JWT_SECRET}
+  expiration_hours: 24
+```
+
+### 4.2. PostgreSQL Database
+
+**Назначение:** Централизованное хранилище всех данных системы с поддержкой транзакций, индексов и полнотекстового поиска.
+
+**Версия:** PostgreSQL 15+
+
+**Основные возможности:**
+- ACID транзакции
+- JSONB для гибких схем
+- Full-text search (tsvector/tsquery)
+- Materialized views для агрегаций
+- Row-level security (опционально)
+- Partitioning для больших таблиц
+
+**Таблицы (подробно в разделе 7):**
+- `players` — профили игроков
+- `player_season_stats` — статистика по сезонам
+- `ai_analysis` — AI отчеты
+- `news_events` — новости и события
+- `system_config` — конфигурация
+- `audit_log` — журнал аудита
+
+**Индексы:**
+- B-tree для точных поисков
+- GIN для JSONB полей
+- GIN для full-text search
+- Partial indexes для частых запросов
+
+**Оптимизация:**
+- Connection pooling (sqlx)
+- Prepared statements
+- Query plan анализ
+- VACUUM автонастройка
+
+### 4.3. MCP Server
+
+**Назначение:** Предоставление стандартизированного интерфейса для AI-агентов (Claude, GPT, локальные LLM) через Model Context Protocol.
+
+**Технологии:**
+- Rust
+- MCP SDK
+- Transport: Server-Sent Events (SSE)
+- JSON-RPC 2.0 для сообщений
+
+**Инструменты (Tools):**
+
+1. **get_player**
+   ```
+   Описание: Получить базовую информацию и статистику игрока
+   Параметры:
+     - name: string (required) — имя игрока
+     - season: string (optional) — сезон в формате "20232024"
+     - include_advanced: boolean (optional, default: false)
+   Возврат: JSON с данными игрока
+   ```
+
+2. **analyze_player**
+   ```
+   Описание: Запустить полный AI анализ игрока
+   Параметры:
+     - name: string (required)
+     - focus: enum ["potential", "strengths", "comparison", "all"]
+     - depth: enum ["quick", "standard", "deep"]
+   Возврат: Структурированный отчет с сильными/слабыми сторонами
+   ```
+
+3. **compare_players**
+   ```
+   Описание: Сравнить двух или более игроков
+   Параметры:
+     - players: array[string] (required, min: 2, max: 5)
+     - metrics: array[string] (optional)
+     - season: string (optional)
+   Возврат: Сравнительная таблица метрик
+   ```
+
+4. **search_players**
+   ```
+   Описание: Поиск игроков по имени с автодополнением
+   Параметры:
+     - query: string (required, min: 2 chars)
+     - limit: integer (optional, default: 10, max: 50)
+     - position: string (optional)
+   Возврат: Список найденных игроков
+   ```
+
+5. **get_team_roster**
+   ```
+   Описание: Получить состав команды
+   Параметры:
+     - team_abbreviation: string (required)
+     - season: string (optional)
+   Возврат: Список игроков команды
+   ```
+
+6. **get_player_news**
+   ```
+   Описание: Получить новости о игроке
+   Параметры:
+     - player_name: string (required)
+     - days_back: integer (optional, default: 30)
+   Возврат: Список новостей с источниками
+   ```
+
+**Транспорт (SSE):**
+- Endpoint: `/mcp/sse`
+- Content-Type: `text/event-stream`
+- Keep-alive: 30 секунд
+- Reconnect: автоматический
+
+**Аутентификация:**
+- API Key в заголовке `Authorization: Bearer <key>`
+- Rate limiting: 100 запросов/минуту на ключ
+
+### 4.4. n8n Workflow Automation
+
+**Назначение:** Визуальная оркестрация сложных бизнес-процессов, интеграция AI (OpenClaw), автоматизация периодических задач.
+
+**Технологии:**
+- n8n (self-hosted)
+- Webhooks для триггеров
+- HTTP Request nodes для интеграций
+- Code nodes для кастомной логики
+
+**Основные workflows:**
+
+**Workflow 1: Player Analysis Pipeline**
+```
+Trigger: Webhook (POST /webhook/analyze-player)
+  ↓
+[HTTP Request] → Rust Backend: GET /api/players/search?name={{ $json.name }}
+  ↓
+[Code Node] → Extract player_id from response
+  ↓
+[HTTP Request] → Rust Backend: GET /api/players/{{ player_id }}/stats
+  ↓
+[PostgreSQL] → Fetch historical data
+  ↓
+[Code Node] → Prepare context for AI
+  ↓
+[HTTP Request] → OpenClaw API: POST /analyze
+  ↓
+[Code Node] → Parse AI response, extract insights
+  ↓
+[PostgreSQL] → Save analysis to ai_analysis table
+  ↓
+[Webhook] → Notify MCP Server (cache invalidation)
+  ↓
+[Response] → Return analysis to client
+```
+
+**Workflow 2: Daily Stats Update**
+```
+Trigger: Schedule (every day at 02:00 UTC)
+  ↓
+[HTTP Request] → NHL API: GET /schedule/yesterday
+  ↓
+[Loop] → For each game
+  ↓
+  [HTTP Request] → NHL API: GET /game/{{ game_id }}/boxscore
+  ↓
+  [PostgreSQL] → Update player stats
+  ↓
+  [Code Node] → Recalculate advanced metrics
+  ↓
+[PostgreSQL] → Batch update
+  ↓
+[Webhook] → Trigger AI re-analysis for top performers
+  ↓
+[Email] → Send daily summary to subscribers
+```
+
+**Workflow 3: News Monitoring**
+```
+Trigger: Schedule (every hour)
+  ↓
+[HTTP Request] → News API: Search for hockey players
+  ↓
+[Code Node] → Filter relevant news, extract player names
+  ↓
+[PostgreSQL] → Save to news_events table
+  ↓
+[HTTP Request] → Rust Backend: POST /api/notify
+  ↓
+[Telegram Bot] → Send alert to subscribed users
+```
+
+**Workflow 4: Potential Prediction**
+```
+Trigger: Schedule (weekly, Sunday 00:00 UTC)
+  ↓
+[PostgreSQL] → Fetch players under 25 years old
+  ↓
+[Loop] → For each player
+  ↓
+  [Code Node] → Calculate age curves, comparables
+  ↓
+  [HTTP Request] → OpenClaw: Predict potential
+  ↓
+  [PostgreSQL] → Update potential_score
+  ↓
+[Code Node] → Identify breakout candidates
+  ↓
+[Webhook] → Notify scouts
+```
+
+**Конфигурация n8n:**
+- Port: 5678
+- Webhook URL: `https://your-domain/webhook/`
+- Execution mode: regular
+- Concurrency: 10
+- Database: PostgreSQL (shared)
+
+### 4.5. OpenClaw AI Engine
+
+**Назначение:** Локальная AI модель для генерации аналитических отчетов, оценки потенциала и выявления паттернов в данных.
+
+**Технологии:**
+- OpenClaw (локальный LLM)
+- API совместимость с OpenAI
+- Модель: Mixtral 8x7B или аналогичная
+- Context window: 32k tokens
+
+**Endpoints:**
+
+1. **POST /analyze**
+   ```json
+   Request:
+   {
+     "player_data": {
+       "name": "Connor McDavid",
+       "age": 27,
+       "position": "C",
+       "seasons": [...],
+       "advanced_stats": {...}
+     },
+     "analysis_type": "full",
+     "language": "en"
+   }
+   
+   Response:
+   {
+     "strengths": ["...", "..."],
+     "weaknesses": ["...", "..."],
+     "potential": {
+       "ceiling": "elite #1 center",
+       "timeline": "peak now, 3-5 years",
+       "confidence": 0.92
+     },
+     "comparable_players": ["...", "..."],
+     "development_areas": ["...", "..."]
+   }
+   ```
+
+2. **POST /predict**
+   ```json
+   Request:
+   {
+     "player_history": [...],
+     "age": 22,
+     "target_age": 27
+   }
+   
+   Response:
+   {
+     "projected_stats": {...},
+     "probability_breakout": 0.78,
+     "risk_factors": ["..."]
+   }
+   ```
+
+3. **POST /compare**
+   ```json
+   Request:
+   {
+     "players": [
+       {"name": "...", "stats": {...}},
+       {"name": "...", "stats": {...}}
+     ]
+   }
+   
+   Response:
+   {
+     "comparison_matrix": {...},
+     "winner_by_category": {...},
+     "overall_assessment": "..."
+   }
+   ```
+
+**Промпты (системные инструкции):**
+
+```
+System Prompt for Player Analysis:
+"You are an expert hockey analyst with 20+ years of experience 
+scouting NHL players. Analyze the provided player statistics 
+and provide detailed, objective assessment.
+
+Guidelines:
+1. Base all claims on actual data, cite specific numbers
+2. Compare to league averages and positional peers
+3. Consider age, experience, and team context
+4. Identify both obvious and subtle patterns
+5. Be honest about weaknesses, not just strengths
+6. Use professional hockey terminology
+7. Provide actionable development recommendations
+
+Output format: JSON with strict schema validation."
+```
+
+**Кэширование:**
+- TTL: 7 дней для стабильных игроков
+- TTL: 24 часа для молодых игроков
+- Invalidated при новых играх
+
+### 4.6. ChatBot (Telegram)
+
+**Назначение:** Удобный мобильный интерфейс для быстрого доступа к аналитике через мессенджер Telegram.
+
+**Технологии:**
+- Rust + teloxide (или Python + aiogram)
+- Long polling или Webhooks
+- Inline keyboards для навигации
+- Markdown/HTML форматирование
+
+**Команды:**
+
+1. **/start** — Приветствие, инструкция
+2. **/search <name>** — Поиск игрока
+3. **/analyze <name>** — Полный AI анализ
+4. **/compare <player1> <player2>** — Сравнение
+5. **/team <abbreviation>** — Состав команды
+6. **/news <player>** — Последние новости
+7. **/subscribe** — Подписка на уведомления
+8. **/settings** — Настройки бота
+
+**Inline режим:**
+- Пользователь вводит `@hockeybot McDavid`
+- Показывает quick results
+- Клик → детальная информация
+
+**Flow: Анализ игрока**
+```
+User: /analyze Ovechkin
+  ↓
+Bot: Search player via MCP: search_players(query="Ovechkin")
+  ↓
+Bot: Show inline keyboard with top 5 results
+  ↓
+User: Clicks "Alexander Ovechkin (WSH)"
+  ↓
+Bot: Call MCP: analyze_player(name="Alexander Ovechkin", focus="all")
+  ↓
+Bot: Format response with emojis:
+📊 *Александр Овечкин* | LW | 38 лет | WSH
+
+🎯 *Сильные стороны:*
+• Элитный бросок с хода (Sh% 13.2, топ-5 NHL)
+• Позиционирование в большинстве (PP G/60: 2.8)
+• Лидерские качества (капитан с 2010)
+
+⚠️ *Зоны роста:*
+• Мобильность в обороне (CF% rel: -2.1)
+• Скорость skating (ниже среднего по лиге)
+
+📈 *Потенциал:*
+• Ceiling: Bottom-6 scorer
+• Timeline: 1-2 сезона
+• Уверенность: 85%
+
+🔗 [Подробнее](https://dashboard/player/8471214)
+  ↓
+Bot: Add inline buttons:
+[📊 Статистика] [📰 Новости] [🔄 Обновить]
+```
+
+**Уведомления (Push):**
+- Подписка на игроков
+- Триггеры: голы, ассисты, травмы, контракты
+- Daily digest (опционально)
+
+**Rate Limiting:**
+- 30 сообщений/минуту на пользователя
+- 1000 пользователей/час всего
+
+### 4.7. Web Dashboard
+
+**Назначение:** Полнофункциональный веб-интерфейс для глубокого анализа с визуализацией данных, графиками и интерактивными элементами.
+
+**Технологии:**
+- Frontend: React 18+ / Vue 3+ / Svelte
+- Charts: Recharts / Chart.js / D3.js
+- State: Redux / Pinia
+- Styling: Tailwind CSS
+- Backend: Rust/Axum (REST API)
+
+**Страницы:**
+
+1. **Dashboard (Home)**
+   - Search bar с autocomplete
+   - Trending players (сегодня/неделя)
+   - Recent AI analyses
+   - Quick stats overview
+
+2. **Player Profile** (`/player/:id`)
+   - Header: фото, имя, позиция, команда
+   - Tabs:
+     * Overview: базовая статистика, AI summary
+     * Statistics: таблицы по сезонам, фильтры
+     * Advanced: xG, Corsi, heatmaps
+     * Comparison: сравнение с другими
+     * News: лента новостей
+     * Potential: прогноз развития
+
+3. **Team Page** (`/team/:abbreviation`)
+   - Roster с сортировкой
+   - Team stats
+   - Schedule & results
+
+4. **Analytics** (`/analytics`)
+   - Leaderboards по метрикам
+   - Custom filters
+   - Export to CSV/PDF
+
+5. **Compare Tool** (`/compare`)
+   - До 5 игроков одновременно
+   - Radar charts
+   - Side-by-side tables
+
+6. **Settings** (`/settings`)
+   - User preferences
+   - Notifications
+   - API keys
+
+**Компоненты:**
+
+- **PlayerCard:** Мини-карточка игрока
+- **StatTable:** Сортируемая таблица с пагинацией
+- **Chart:** Line/Bar/Scatter/Radar charts
+- **Heatmap:** Визуализация зон активности
+- **Timeline:** Карьера игрока по годам
+- **AIReport:** Форматированный AI отчет
+
+**API Integration:**
+- REST calls к Rust Backend
+- WebSocket для real-time updates
+- Optimistic UI updates
+- Error boundaries
+
+**Performance:**
+- Code splitting (lazy loading)
+- Image optimization
+- Service Worker (offline mode)
+- CDN для статики
+
+---
+
+## 5. Потоки данных
+
+### 5.1. Основной поток: Анализ игрока
+
+**Сценарий:** Пользователь запрашивает анализ игрока через чат-бота
+
+```
+┌──────────┐
+│  User    │
+└────┬─────┘
+     │ 1. /analyze McDavid
+     ▼
+┌──────────────┐
+│  Telegram    │
+│     Bot      │
+└────┬─────────┘
+     │ 2. HTTP POST /mcp/sse
+     │    {tool: "analyze_player", 
+     │     params: {name: "Connor McDavid"}}
+     ▼
+┌──────────────┐
+│  MCP Server  │◄───────┐
+│    (Rust)    │        │ 6. Cache invalidation
+└────┬─────────┘        │
+     │ 3. Check cache    │
+     ▼                   │
+┌──────────────┐        │
+│  PostgreSQL  │────────┘
+│   (Cache)    │
+└────┬─────────┘
+     │ 4. Cache miss → fetch
+     ▼
+┌──────────────┐
+│ Rust Backend │
+│   (Axum)     │
+└─────────────┘
+     │ 5a. GET /player/{id}/landing
+     ▼
+┌──────────────┐
+│   NHL API    │
+└────┬─────────┘
+     │ 5b. JSON response
+     ▼
+┌──────────────┐
+│ Rust Backend │
+│              │
+│ • Normalize  │
+│ • Calculate  │
+│   metrics    │
+└────┬─────────┘
+     │ 5c. Save to DB
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+│              │
+│ • players    │
+│ • stats      │
+└────┬─────────┘
+     │ 6. Trigger webhook
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Workflow   │
+└────┬─────────┘
+     │ 7. Prepare context
+     ▼
+┌──────────────┐
+│  OpenClaw    │
+│     AI       │
+└────┬─────────┘
+     │ 8. Analysis result
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+│              │
+│ • ai_analysis│
+└────┬─────────┘
+     │ 9. Return via MCP
+     ▼
+┌──────────────┐
+│  MCP Server  │
+└────┬─────────
+     │ 10. Formatted response
+     ▼
+┌──────────────┐
+│  Telegram    │
+│     Bot      │
+└────┬─────────┘
+     │ 11. Message with emojis
+     ▼
+┌──────────
+│  User    │
+└──────────┘
+```
+
+### 5.2. Поток: Ежедневное обновление статистики
+
+```
+┌──────────┐
+│ Schedule │
+│ 02:00 UTC│
+└────┬─────┘
+     │ 1. Cron trigger
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Workflow   │
+└────┬─────────┘
+     │ 2. GET /schedule/2024-01-15
+     ▼
+┌──────────────┐
+│   NHL API    │
+└────┬─────────┘
+     │ 3. List of games
+     ▼
+┌──────────────┐
+│     n8n      │
+│  Loop games  │
+└────┬─────────┘
+     │ 4. For each game:
+     │    GET /game/{id}/boxscore
+     ▼
+┌──────────────┐
+│   NHL API    │
+└────┬─────────┘
+     │ 5. Detailed stats
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Process    │
+└────┬─────────┘
+     │ 6. Batch update
+     ▼
+┌──────────────┐
+│ Rust Backend │
+│              │
+│ POST /stats/ │
+│   update     │
+└────┬─────────┘
+     │ 7. UPSERT queries
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+│              │
+│ • Update     │
+│   stats      │
+│ • Recalculate│
+│   aggregates │
+└────┬─────────┘
+     │ 8. Identify changed players
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Filter     │
+└────┬─────────┘
+     │ 9. Trigger AI re-analysis
+     │    for significant changes
+     ▼
+┌──────────────┐
+│  OpenClaw    │
+│   (Async)    │
+└────┬─────────┘
+     │ 10. Update reports
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+└────┬─────────┘
+     │ 11. Invalidate cache
+     ▼
+┌──────────────┐
+│ MCP Server   │
+│   (Broadcast)│
+└────┬─────────┘
+     │ 12. Notify subscribers
+     ▼
+┌──────────────┐
+│   ChatBots   │
+│  Dashboards  │
+└──────────────┘
+```
+
+### 5.3. Поток: Поиск игрока с автодополнением
+
+```
+┌──────────┐
+│  User    │
+│ typing...│
+└────┬─────┘
+     │ 1. "McD" (debounced 300ms)
+     ▼
+┌──────────────┐
+│  Dashboard   │
+│  / ChatBot   │
+└────┬─────────
+     │ 2. GET /api/players/search?q=McD&limit=5
+     ▼
+┌──────────────┐
+│ Rust Backend │
+│              │
+│ • Check cache│
+│ • FTS query  │
+└────┬─────────┘
+     │ 3. SELECT ... WHERE 
+     │    to_tsvector(name) @@ 
+     │    to_tsquery('McD:*')
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+│              │
+│ • players    │
+│   (GIN index)│
+└────┬─────────┘
+     │ 4. Results array
+     ▼
+┌──────────────┐
+│ Rust Backend │
+│              │
+│ • Format     │
+│ • Add photos │
+└────┬─────────┘
+     │ 5. JSON response
+     ▼
+┌──────────────┐
+│  Dashboard   │
+│  / ChatBot   │
+└────┬─────────┘
+     │ 6. Dropdown suggestions
+     ▼
+┌──────────
+│  User    │
+│ selects  │
+└──────────┘
+```
+
+### 5.4. Поток: Real-time уведомления
+
+```
+┌──────────────┐
+│   NHL API    │
+│  (Game Live) │
+└────┬─────────┘
+     │ 1. Goal scored (webhook/poll)
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Monitor    │
+└────┬─────────┘
+     │ 2. Extract player info
+     ▼
+┌──────────────┐
+│  PostgreSQL  │
+│              │
+│ • Check      │
+│   subscribers│
+└────┬─────────┘
+     │ 3. Get subscribed users
+     ▼
+┌──────────────┐
+│     n8n      │
+│   Dispatch   │
+└────┬─────────┘
+     │ 4. For each user:
+     │    • Telegram message
+     │    • WebSocket push
+     │    • Email (if configured)
+     ▼
+┌──────────────┐
+│   Multiple   │
+│   Channels   │
+└────┬─────────┘
+     │ 5. Delivery
+     ▼
+┌──────────────┐
+│    Users     │
+│  (Real-time) │
+└──────────────┘
+```
+
+---
+
+## 6. Спецификация API
+
+### 6.1. REST API (Rust Backend)
+
+**Base URL:** `https://api.hockey-analytics.com/v1`
+
+**Authentication:** Bearer Token (JWT)
+
+**Rate Limiting:** 100 requests/minute per API key
+
+#### Players
+
+**GET /players/search**
+```
+Query Parameters:
+  - q: string (required, min: 2 chars) — search query
+  - limit: integer (optional, default: 10, max: 50)
+  - position: string (optional) — C/LW/RW/D/G
+  - nationality: string (optional)
+
+Response 200:
+{
+  "data": [
+    {
+      "id": 8478402,
+      "name": "Connor McDavid",
+      "position": "C",
+      "team": "EDM",
+      "nationality": "CAN",
+      "age": 27,
+      "photo_url": "https://..."
+    }
+  ],
+  "meta": {
+    "total": 1,
+    "limit": 10
+  }
+}
+```
+
+**GET /players/{id}**
+```
+Path Parameters:
+  - id: integer — NHL player ID
+
+Response 200:
+{
+  "data": {
+    "id": 8478402,
+    "name": "Connor McDavid",
+    "firstName": "Connor",
+    "lastName": "McDavid",
+    "position": "C",
+    "shootsCatches": "L",
+    "height": "6' 1\"",
+    "weight": 193,
+    "birthDate": "1997-01-13",
+    "birthCity": "Richmond Hill",
+    "birthCountry": "CAN",
+    "team": {
+      "id": 22,
+      "name": "Edmonton Oilers",
+      "abbreviation": "EDM"
+    },
+    "draft": {
+      "year": 2015,
+      "round": 1,
+      "pick": 1,
+      "team": "EDM"
+    }
+  }
+}
+```
+
+**GET /players/{id}/stats**
+```
+Path Parameters:
+  - id: integer
+
+Query Parameters:
+  - season: string (optional) — "20232024"
+  - type: enum ["regular", "playoffs", "both"] (default: "regular")
+  - include_advanced: boolean (default: false)
+
+Response 200:
+{
+  "data": {
+    "player_id": 8478402,
+    "seasons": [
+      {
+        "season": "20232024",
+        "team": "EDM",
+        "league": "NHL",
+        "basic": {
+          "games": 76,
+          "goals": 32,
+          "assists": 100,
+          "points": 132,
+          "plus_minus": 21,
+          "pim": 36,
+          "power_play_goals": 15,
+          "short_handed_goals": 1,
+          "game_winning_goals": 5,
+          "shots": 287,
+          "shooting_percentage": 11.1,
+          "time_on_ice_per_game": "22:18",
+          "face_off_percentage": 53.2
+        },
+        "advanced": {
+          "xG": 28.4,
+          "xG_per_60": 2.89,
+          "corsi_for_percentage": 54.2,
+          "fenwick_for_percentage": 53.8,
+          "pdo": 101.2,
+          "offensive_zone_start_percentage": 52.1,
+          "zone_entry_success": 68.5,
+          "shot_quality": 11.8,
+          "primary_assists_per_60": 3.2,
+          "isolated_impact": 8.9
+        }
+      }
+    ],
+    "career_totals": {
+      "games": 645,
+      "goals": 335,
+      "assists": 647,
+      "points": 982
+    }
+  }
+}
+```
+
+#### Analysis
+
+**GET /players/{id}/analysis**
+```
+Path Parameters:
+  - id: integer
+
+Query Parameters:
+  - season: string (optional)
+  - language: string (default: "en")
+
+Response 200:
+{
+  "data": {
+    "player_id": 8478402,
+    "analysis_date": "2024-01-15T10:30:00Z",
+    "strengths": [
+      {
+        "category": "Skating",
+        "description": "Elite speed and edge work, consistently wins races to loose pucks",
+        "evidence": "Zone entry success: 68.5% (top 5% NHL)"
+      },
+      {
+        "category": "Playmaking",
+        "description": "Exceptional vision and passing accuracy, creates high-danger chances",
+        "evidence": "Primary assists/60: 3.2 (1st in NHL)"
+      }
+    ],
+    "weaknesses": [
+      {
+        "category": "Defensive engagement",
+        "description": "Occasionally gambles in neutral zone, leading to odd-man rushes against",
+        "evidence": "Defensive zone coverage: 47% (below team average)"
+      }
+    ],
+    "potential": {
+      "ceiling": "Generational #1 center",
+      "current_level": "Elite (achieved)",
+      "timeline": "Peak performance now, expected 5-7 more years",
+      "confidence": 0.95,
+      "comparable_players": [
+        {"name": "Wayne Gretzky", "similarity": 0.72},
+        {"name": "Mario Lemieux", "similarity": 0.68}
+      ]
+    },
+    "development_areas": [
+      "Defensive zone face-offs",
+      "Shot selection in high-pressure situations"
+    ],
+    "ai_model": "OpenClaw-Mixtral-8x7B",
+    "sources": [
+      "https://api-web.nhle.com/v1/player/8478402/landing"
+    ]
+  }
+}
+```
+
+**POST /players/compare**
+```
+Request:
+{
+  "player_ids": [8478402, 8480012],
+  "season": "20232024",
+  "metrics": ["all"]
+}
+
+Response 200:
+{
+  "data": {
+    "comparison": {
+      "players": [
+        {"id": 8478402, "name": "Connor McDavid"},
+        {"id": 8480012, "name": "Auston Matthews"}
+      ],
+      "metrics": {
+        "points_per_game": [1.74, 1.42],
+        "xG_per_60": [2.89, 3.12],
+        "corsi_for_percentage": [54.2, 52.8],
+        "shooting_percentage": [11.1, 15.8]
+      },
+      "winner_by_metric": {
+        "points_per_game": "Connor McDavid",
+        "xG_per_60": "Auston Matthews",
+        "corsi_for_percentage": "Connor McDavid",
+        "shooting_percentage": "Auston Matthews"
+      },
+      "overall_assessment": "McDavid excels in playmaking and possession, Matthews in finishing and shot quality"
+    }
+  }
+}
+```
+
+#### Teams
+
+**GET /teams**
+```
+Response 200:
+{
+  "data": [
+    {
+      "id": 22,
+      "name": "Edmonton Oilers",
+      "abbreviation": "EDM",
+      "conference": "Western",
+      "division": "Pacific",
+      "venue": "Rogers Place",
+      "founded": 1979
+    }
+  ]
+}
+```
+
+**GET /teams/{abbreviation}/roster**
+```
+Path Parameters:
+  - abbreviation: string (e.g., "EDM")
+
+Query Parameters:
+  - season: string (optional)
+
+Response 200:
+{
+  "data": {
+    "team": "EDM",
+    "season": "20232024",
+    "roster": [
+      {
+        "player_id": 8478402,
+        "name": "Connor McDavid",
+        "jersey_number": 97,
+        "position": "C",
+        "age": 27,
+        "stats_summary": {
+          "games": 76,
+          "points": 132
+        }
+      }
+    ]
+  }
+}
+```
+
+#### News
+
+**GET /news**
+```
+Query Parameters:
+  - player_id: integer (optional)
+  - team: string (optional)
+  - days: integer (default: 30)
+  - limit: integer (default: 20)
+
+Response 200:
+{
+  "data": [
+    {
+      "id": 12345,
+      "title": "McDavid reaches 100 assists for the season",
+      "source": "NHL.com",
+      "url": "https://...",
+      "published_at": "2024-01-14T18:30:00Z",
+      "player_ids": [8478402],
+      "team": "EDM",
+      "sentiment": "positive",
+      "category": "milestone"
+    }
+  ]
+}
+```
+
+#### Analytics
+
+**GET /analytics/leaders**
+```
+Query Parameters:
+  - metric: string (required) — "points", "goals", "xG", etc.
+  - season: string (optional)
+  - position: string (optional)
+  - limit: integer (default: 50)
+  - min_games: integer (default: 20)
+
+Response 200:
+{
+  "data": {
+    "metric": "points",
+    "season": "20232024",
+    "leaders": [
+      {
+        "rank": 1,
+        "player_id": 8478402,
+        "name": "Connor McDavid",
+        "team": "EDM",
+        "value": 132,
+        "games": 76
+      }
+    ]
+  }
+}
+```
+
+**GET /analytics/player/{id}/timeline**
+```
+Description: Career progression visualization data
+
+Response 200:
+{
+  "data": {
+    "player_id": 8478402,
+    "seasons": [
+      {
+        "season": "20152016",
+        "age": 18,
+        "points": 48,
+        "xG": 15.2,
+        "toi_per_game": "18:45"
+      }
+    ],
+    "projections": {
+      "age_28": {"points": 115, "xG": 32.5},
+      "age_30": {"points": 105, "xG": 28.3}
+    }
+  }
+}
+```
+
+### 6.2. MCP Protocol (JSON-RPC 2.0)
+
+**Transport:** Server-Sent Events (SSE)  
+**Endpoint:** `/mcp/sse`
+
+#### Tool Calls
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "abc123",
+  "method": "tools/call",
+  "params": {
+    "name": "get_player",
+    "arguments": {
+      "name": "Connor McDavid",
+      "season": "20232024",
+      "include_advanced": true
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "abc123",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"player\": {...}, \"stats\": {...}}"
+      }
+    ]
+  }
+}
+```
+
+#### Available Tools
+
+**1. get_player**
+```json
+{
+  "name": "get_player",
+  "description": "Retrieve player information and statistics",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Player full name"
+      },
+      "season": {
+        "type": "string",
+        "description": "Season in format YYYYYYYY"
+      },
+      "include_advanced": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "required": ["name"]
+  }
+}
+```
+
+**2. analyze_player**
+```json
+{
+  "name": "analyze_player",
+  "description": "Run comprehensive AI analysis of a player",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "focus": {
+        "type": "string",
+        "enum": ["potential", "strengths", "comparison", "all"],
+        "default": "all"
+      },
+      "depth": {
+        "type": "string",
+        "enum": ["quick", "standard", "deep"],
+        "default": "standard"
+      }
+    },
+    "required": ["name"]
+  }
+}
+```
+
+**3. compare_players**
+```json
+{
+  "name": "compare_players",
+  "description": "Compare multiple players side by side",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "players": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 2,
+        "maxItems": 5
+      },
+      "metrics": {
+        "type": "array",
+        "items": {"type": "string"}
+      },
+      "season": {
+        "type": "string"
+      }
+    },
+    "required": ["players"]
+  }
+}
+```
+
+**4. search_players**
+```json
+{
+  "name": "search_players",
+  "description": "Search for players by name with autocomplete",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "minLength": 2
+      },
+      "limit": {
+        "type": "integer",
+        "default": 10,
+        "maximum": 50
+      },
+      "position": {
+        "type": "string"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+### 6.3. Webhooks (n8n)
+
+**Outgoing Webhooks from n8n:**
+
+**1. Player Analysis Complete**
+```
+POST https://api.hockey-analytics.com/webhooks/analysis-complete
+
+Headers:
+  X-Webhook-Signature: sha256=...
+  Content-Type: application/json
+
+Body:
+{
+  "event": "analysis.completed",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "data": {
+    "player_id": 8478402,
+    "analysis_id": 12345,
+    "triggered_by": "manual" | "scheduled" | "stat_update"
+  }
+}
+```
+
+**2. Stats Updated**
+```
+POST https://api.hockey-analytics.com/webhooks/stats-updated
+
+Body:
+{
+  "event": "stats.updated",
+  "timestamp": "2024-01-15T02:15:00Z",
+  "data": {
+    "player_ids": [8478402, 8480012],
+    "season": "20232024",
+    "game_date": "2024-01-14",
+    "significant_changes": [
+      {
+        "player_id": 8478402,
+        "metric": "points",
+        "old_value": 130,
+        "new_value": 132
+      }
+    ]
+  }
+}
+```
+
+**3. Alert Triggered**
+```
+POST https://api.hockey-analytics.com/webhooks/alert
+
+Body:
+{
+  "event": "alert.triggered",
+  "timestamp": "2024-01-15T20:45:00Z",
+  "data": {
+    "alert_type": "milestone" | "injury" | "contract" | "performance",
+    "player_id": 8478402,
+    "message": "McDavid reaches 100 assists",
+    "priority": "high" | "medium" | "low",
+    "metadata": {
+      "milestone_type": "100_assists_season"
+    }
+  }
+}
+```
+
+**Incoming Webhooks to n8n:**
+
+**1. Manual Analysis Trigger**
+```
+POST https://n8n.your-domain.com/webhook/analyze-player
+
+Body:
+{
+  "player_name": "Connor McDavid",
+  "requester_id": "user_123",
+  "priority": "normal"
+}
+```
+
+---
+
+## 7. Схема базы данных
+
+### 7.1. Общая структура
+
+**Database:** `hockey_analytics`  
+**Encoding:** UTF-8  
+**Collation:** en_US.UTF-8  
+**Timezone:** UTC
+
+### 7.2. Таблицы
+
+#### players
+
+```sql
+CREATE TABLE players (
+    id SERIAL PRIMARY KEY,
+    nhl_player_id INTEGER UNIQUE NOT NULL,
+    
+    -- Personal info
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    position TEXT NOT NULL CHECK (position IN ('C', 'LW', 'RW', 'D', 'G')),
+    shoot_catches TEXT CHECK (shoot_catches IN ('L', 'R', 'Both')),
+    
+    -- Physical
+    height_cm INTEGER,  -- stored in cm for calculations
+    height_display TEXT, -- e.g., "6' 1\""
+    weight_kg INTEGER,
+    weight_lbs INTEGER,
+    
+    -- Birth info
+    birth_date DATE,
+    birth_city TEXT,
+    birth_state_province TEXT,
+    birth_country TEXT,
+    nationality TEXT,
+    
+    -- Current team
+    current_team_id INTEGER,
+    current_team_abbreviation TEXT,
+    jersey_number INTEGER,
+    
+    -- Draft info
+    draft_year INTEGER,
+    draft_round INTEGER,
+    draft_pick INTEGER,
+    draft_team_abbreviation TEXT,
+    
+    -- Metadata
+    photo_url TEXT,
+    twitter_handle TEXT,
+    
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_api_sync TIMESTAMPTZ,
+    
+    -- Full-text search vector
+    search_vector TSVECTOR
+);
+
+-- Indexes
+CREATE INDEX idx_players_nhl_id ON players(nhl_player_id);
+CREATE INDEX idx_players_full_name ON players(full_name);
+CREATE INDEX idx_players_position ON players(position);
+CREATE INDEX idx_players_current_team ON players(current_team_abbreviation);
+CREATE INDEX idx_players_birth_country ON players(birth_country);
+CREATE INDEX idx_players_search_vector ON players USING GIN(search_vector);
+
+-- Trigger for search_vector update
+CREATE TRIGGER players_search_vector_update
+    BEFORE INSERT OR UPDATE ON players
+    FOR EACH ROW
+    EXECUTE FUNCTION tsvector_update_trigger(
+        search_vector,
+        'pg_catalog.english',
+        first_name, last_name, full_name
+    );
+```
+
+#### player_season_stats
+
+```sql
+CREATE TABLE player_season_stats (
+    id SERIAL PRIMARY KEY,
+    player_id INTEGER REFERENCES players(id) ON DELETE CASCADE,
+    nhl_player_id INTEGER NOT NULL REFERENCES players(nhl_player_id),
+    
+    -- Season info
+    season TEXT NOT NULL,  -- "20232024"
+    league TEXT DEFAULT 'NHL',
+    team_abbreviation TEXT,
+    
+    -- Game counts
+    games_played INTEGER DEFAULT 0,
+    games_started INTEGER DEFAULT 0,
+    
+    -- Basic stats (skaters)
+    goals INTEGER DEFAULT 0,
+    assists INTEGER DEFAULT 0,
+    points INTEGER DEFAULT 0,
+    plus_minus INTEGER DEFAULT 0,
+    penalty_minutes INTEGER DEFAULT 0,
+    power_play_goals INTEGER DEFAULT 0,
+    power_play_assists INTEGER DEFAULT 0,
+    power_play_points INTEGER DEFAULT 0,
+    short_handed_goals INTEGER DEFAULT 0,
+    short_handed_assists INTEGER DEFAULT 0,
+    short_handed_points INTEGER DEFAULT 0,
+    game_winning_goals INTEGER DEFAULT 0,
+    overtime_goals INTEGER DEFAULT 0,
+    shots INTEGER DEFAULT 0,
+    shooting_percentage DECIMAL(5,2),
+    time_on_ice_per_game TEXT,
+    shifts_per_game DECIMAL(4,1),
+    
+    -- Face-offs
+    face_off_wins INTEGER,
+    face_off_losses INTEGER,
+    face_off_percentage DECIMAL(5,2),
+    
+    -- Advanced stats (JSONB for flexibility)
+    advanced_metrics JSONB DEFAULT '{}'::jsonb,
+    /*
+    Structure:
+    {
+      "xG": 28.4,
+      "xG_per_60": 2.89,
+      "corsi_for": 1245,
+      "corsi_against": 1045,
+      "corsi_for_percentage": 54.4,
+      "fenwick_for": 985,
+      "fenwick_against": 845,
+      "fenwick_for_percentage": 53.8,
+      "pdo": 101.2,
+      "offensive_zone_starts": 645,
+      "defensive_zone_starts": 598,
+      "offensive_zone_start_percentage": 51.9,
+      "zone_entry_success": 68.5,
+      "zone_exit_success": 72.3,
+      "shot_quality": 11.8,
+      "high_danger_chances": 89,
+      "high_danger_chances_for_percentage": 52.1,
+      "primary_assists": 45,
+      "secondary_assists": 55,
+      "isolated_impact": 8.9,
+      "war": 6.8,
+      "gar": 12.5
+    }
+    */
+    
+    -- Per-game averages (calculated)
+    points_per_game DECIMAL(4,2),
+    goals_per_60 DECIMAL(4,2),
+    assists_per_60 DECIMAL(4,2),
+    points_per_60 DECIMAL(4,2),
+    
+    -- Raw data from API (for debugging/reprocessing)
+    raw_api_data JSONB,
+    
+    -- Metadata
+    data_source TEXT DEFAULT 'NHL_API',
+    calculated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Constraints
+    UNIQUE(nhl_player_id, season, team_abbreviation)
+);
+
+-- Indexes
+CREATE INDEX idx_stats_player_season ON player_season_stats(nhl_player_id, season);
+CREATE INDEX idx_stats_season ON player_season_stats(season);
+CREATE INDEX idx_stats_team ON player_season_stats(team_abbreviation);
+CREATE INDEX idx_stats_points ON player_season_stats(points DESC) WHERE season = '20232024';
+CREATE INDEX idx_stats_advanced_gin ON player_season_stats USING GIN(advanced_metrics jsonb_path_ops);
+
+-- Partial indexes for current season
+CREATE INDEX idx_stats_current_season_points 
+    ON player_season_stats(player_id, points DESC) 
+    WHERE season = '20232024' AND league = 'NHL';
+```
+
+#### ai_analysis
+
+```sql
+CREATE TABLE ai_analysis (
+    id SERIAL PRIMARY KEY,
+    player_id INTEGER REFERENCES players(id) ON DELETE CASCADE,
+    nhl_player_id INTEGER NOT NULL,
+    
+    -- Analysis metadata
+    analysis_date TIMESTAMPTZ DEFAULT NOW(),
+    season TEXT,  -- null for career analysis
+    analysis_type TEXT CHECK (analysis_type IN ('full', 'potential', 'strengths', 'comparison')),
+    ai_model TEXT DEFAULT 'OpenClaw-Mixtral-8x7B',
+    language TEXT DEFAULT 'en',
+    confidence_score DECIMAL(3,2),  -- 0.0 to 1.0
+    
+    -- Structured results (JSONB)
+    strengths JSONB,
+    /*
+    [
+      {
+        "category": "Skating",
+        "description": "Elite speed...",
+        "evidence": "Zone entry success: 68.5%",
+        "rating": 9.5
+      }
+    ]
+    */
+    
+    weaknesses JSONB,
+    /*
+    [
+      {
+        "category": "Defensive play",
+        "description": "...",
+        "evidence": "...",
+        "rating": 6.2
+      }
+    ]
+    */
+    
+    potential JSONB,
+    /*
+    {
+      "ceiling": "elite #1 center",
+      "current_level": "elite",
+      "timeline": "peak now, 5+ years",
+      "confidence": 0.95,
+      "comparable_players": [
+        {"name": "Wayne Gretzky", "similarity": 0.72}
+      ],
+      "probability_breakout": null,
+      "risk_factors": ["injury history"]
+    }
+    */
+    
+    development_areas JSONB,
+    /*
+    ["Defensive zone face-offs", "Shot selection"]
+    */
+    
+    statistical_insights JSONB,
+    /*
+    {
+      "percentile_rankings": {
+        "points_per_game": 99,
+        "xG_per_60": 95
+      },
+      "league_rank": 1,
+      "position_rank": 1
+    }
+    */
+    
+    -- Full text report
+    full_report TEXT,
+    
+    -- Sources
+    sources JSONB,
+    /*
+    ["https://api-web.nhle.com/v1/player/8478402/landing"]
+    */
+    
+    -- Validation
+    validated_by TEXT,  -- human analyst if reviewed
+    validated_at TIMESTAMPTZ,
+    
+    -- Cache control
+    cache_key TEXT,
+    expires_at TIMESTAMPTZ,
+    
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_ai_player ON ai_analysis(nhl_player_id);
+CREATE INDEX idx_ai_date ON ai_analysis(analysis_date DESC);
+CREATE INDEX idx_ai_type ON ai_analysis(analysis_type);
+CREATE INDEX idx_ai_season ON ai_analysis(season);
+CREATE INDEX idx_ai_strengths_gin ON ai_analysis USING GIN(strengths jsonb_path_ops);
+CREATE INDEX idx_ai_potential_gin ON ai_analysis USING GIN(potential jsonb_path_ops);
+
+-- Partial index for latest analysis per player
+CREATE UNIQUE INDEX idx_ai_latest_per_player 
+    ON ai_analysis(nhl_player_id, season, analysis_type) 
+    WHERE (season IS NOT NULL)
+    WITH (fillfactor=90);
+```
+
+#### news_events
+
+```sql
+CREATE TABLE news_events (
+    id SERIAL PRIMARY KEY,
+    
+    -- Content
+    title TEXT NOT NULL,
+    summary TEXT,
+    full_text TEXT,
+    url TEXT NOT NULL,
+    
+    -- Source
+    source TEXT NOT NULL,
+    author TEXT,
+    
+    -- Classification
+    category TEXT CHECK (category IN (
+        'general', 'injury', 'trade', 'contract', 'milestone', 
+        'performance', 'suspension', 'call_up', 'send_down'
+    )),
+    sentiment TEXT CHECK (sentiment IN ('positive', 'neutral', 'negative')),
+    
+    -- Entities
+    player_ids INTEGER[] ARRAY,  -- associated players
+    team_abbreviations TEXT[] ARRAY,
+    
+    -- Timestamps
+    published_at TIMESTAMPTZ NOT NULL,
+    collected_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    -- Engagement
+    view_count INTEGER DEFAULT 0,
+    share_count INTEGER DEFAULT 0,
+    
+    -- Metadata
+    language TEXT DEFAULT 'en',
+    image_url TEXT,
+    tags TEXT[] ARRAY,
+    
+    -- Processing
+    processed BOOLEAN DEFAULT FALSE,
+    ai_summary TEXT,
+    
+    UNIQUE(url)
+);
+
+-- Indexes
+CREATE INDEX idx_news_published ON news_events(published_at DESC);
+CREATE INDEX idx_news_category ON news_events(category);
+CREATE INDEX idx_news_sentiment ON news_events(sentiment);
+CREATE INDEX idx_news_player_ids ON news_events USING GIN(player_ids);
+CREATE INDEX idx_news_team_abbreviations ON news_events USING GIN(team_abbreviations);
+CREATE INDEX idx_news_search ON news_events USING GIN(to_tsvector('english', title, summary));
+```
+
+#### teams
+
+```sql
+CREATE TABLE teams (
+    id SERIAL PRIMARY KEY,
+    nhl_team_id INTEGER UNIQUE NOT NULL,
+    abbreviation TEXT UNIQUE NOT NULL,
+    team_name TEXT NOT NULL,
+    location TEXT NOT NULL,
+    conference TEXT CHECK (conference IN ('Eastern', 'Western')),
+    division TEXT,
+    venue_name TEXT,
+    venue_city TEXT,
+    venue_capacity INTEGER,
+    founded_year INTEGER,
+    first_year_of_play INTEGER,
+    short_name TEXT,
+    twitter TEXT,
+    official_site_url TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_teams_abbreviation ON teams(abbreviation);
+CREATE INDEX idx_teams_conference ON teams(conference);
+CREATE INDEX idx_teams_division ON teams(division);
+```
+
+#### system_config
+
+```sql
+CREATE TABLE system_config (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL,
+    description TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by TEXT
+);
+
+-- Example rows:
+-- ('nhl_api.rate_limit', '{"requests_per_minute": 60}')
+-- ('cache.ttl_seconds', '{"player_stats": 300, "analysis": 604800}')
+-- ('feature.flags', '{"ai_analysis": true, "real_time_updates": true}')
+```
+
+#### audit_log
+
+```sql
+CREATE TABLE audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    user_id TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id INTEGER,
+    old_value JSONB,
+    new_value JSONB,
+    ip_address INET,
+    user_agent TEXT,
+    metadata JSONB
+);
+
+CREATE INDEX idx_audit_timestamp ON audit_log(timestamp DESC);
+CREATE INDEX idx_audit_user ON audit_log(user_id);
+CREATE INDEX idx_audit_action ON audit_log(action);
+CREATE INDEX idx_audit_resource ON audit_log(resource_type, resource_id);
+```
+
+#### api_keys
+
+```sql
+CREATE TABLE api_keys (
+    id SERIAL PRIMARY KEY,
+    key_hash TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    owner_email TEXT,
+    permissions JSONB DEFAULT '{"read": true, "write": false, "admin": false}',
+    rate_limit INTEGER DEFAULT 100,  -- requests per minute
+    rate_limit_window INTEGER DEFAULT 60,  -- seconds
+    active BOOLEAN DEFAULT TRUE,
+    expires_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX idx_api_keys_active ON api_keys(active) WHERE active = TRUE;
+```
+
+### 7.3. Views
+
+#### v_player_career_summary
+
+```sql
+CREATE VIEW v_player_career_summary AS
+SELECT 
+    p.id,
+    p.nhl_player_id,
+    p.full_name,
+    p.position,
+    p.current_team_abbreviation,
+    COUNT(DISTINCT pss.season) as seasons_played,
+    SUM(pss.games_played) as career_games,
+    SUM(pss.goals) as career_goals,
+    SUM(pss.assists) as career_assists,
+    SUM(pss.points) as career_points,
+    AVG(pss.points_per_game) as career_ppg,
+    MAX(pss.points) as best_season_points,
+    (SELECT season FROM player_season_stats 
+     WHERE nhl_player_id = p.nhl_player_id 
+     ORDER BY points DESC LIMIT 1) as best_season
+FROM players p
+LEFT JOIN player_season_stats pss ON p.nhl_player_id = pss.nhl_player_id
+WHERE pss.league = 'NHL'
+GROUP BY p.id, p.nhl_player_id, p.full_name, p.position, p.current_team_abbreviation;
+```
+
+#### v_current_season_leaders
+
+```sql
+CREATE VIEW v_current_season_leaders AS
+SELECT 
+    p.nhl_player_id,
+    p.full_name,
+    p.position,
+    p.current_team_abbreviation,
+    pss.season,
+    pss.games_played,
+    pss.goals,
+    pss.assists,
+    pss.points,
+    pss.points_per_game,
+    pss.plus_minus,
+    pss.advanced_metrics->>'xG' as xg,
+    pss.advanced_metrics->>'corsi_for_percentage' as corsi_pct,
+    RANK() OVER (ORDER BY pss.points DESC) as points_rank,
+    RANK() OVER (ORDER BY pss.goals DESC) as goals_rank,
+    RANK() OVER (ORDER BY (pss.advanced_metrics->>'xG')::DECIMAL DESC) as xg_rank
+FROM players p
+JOIN player_season_stats pss ON p.nhl_player_id = pss.nhl_player_id
+WHERE pss.season = '20232024' 
+  AND pss.league = 'NHL'
+  AND pss.games_played >= 20;
+```
+
+### 7.4. Functions & Procedures
+
+#### fn_calculate_player_age
+
+```sql
+CREATE OR REPLACE FUNCTION fn_calculate_player_age(birth_date DATE, as_of_date DATE DEFAULT CURRENT_DATE)
+RETURNS INTEGER AS $$
+BEGIN
+    RETURN EXTRACT(YEAR FROM age(as_of_date, birth_date));
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+```
+
+#### fn_update_player_stats
+
+```sql
+CREATE OR REPLACE FUNCTION fn_update_player_stats(
+    p_nhl_player_id INTEGER,
+    p_season TEXT,
+    p_raw_data JSONB
+)
+RETURNS INTEGER AS $$
+DECLARE
+    v_player_id INTEGER;
+    v_stats_id INTEGER;
+BEGIN
+    -- Get or create player
+    SELECT id INTO v_player_id 
+    FROM players 
+    WHERE nhl_player_id = p_nhl_player_id;
+    
+    IF v_player_id IS NULL THEN
+        RAISE EXCEPTION 'Player not found: %', p_nhl_player_id;
+    END IF;
+    
+    -- Upsert stats
+    INSERT INTO player_season_stats (
+        nhl_player_id, player_id, season, raw_api_data,
+        games_played, goals, assists, points,
+        calculated_at
+    )
+    VALUES (
+        p_nhl_player_id, v_player_id, p_season, p_raw_data,
+        (p_raw_data->>'games')::INTEGER,
+        (p_raw_data->>'goals')::INTEGER,
+        (p_raw_data->>'assists')::INTEGER,
+        (p_raw_data->>'points')::INTEGER,
+        NOW()
+    )
+    ON CONFLICT (nhl_player_id, season, team_abbreviation)
+    DO UPDATE SET
+        games_played = EXCLUDED.games_played,
+        goals = EXCLUDED.goals,
+        assists = EXCLUDED.assists,
+        points = EXCLUDED.points,
+        raw_api_data = EXCLUDED.raw_api_data,
+        calculated_at = NOW()
+    RETURNING id INTO v_stats_id;
+    
+    -- Recalculate per-game averages
+    UPDATE player_season_stats
+    SET 
+        points_per_game = CASE 
+            WHEN games_played > 0 THEN ROUND(points::DECIMAL / games_played, 2)
+            ELSE 0
+        END,
+        updated_at = NOW()
+    WHERE id = v_stats_id;
+    
+    RETURN v_stats_id;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+### 7.5. Triggers
+
+#### tr_update_timestamp
+
+```sql
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_players_updated_at
+    BEFORE UPDATE ON players
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_stats_updated_at
+    BEFORE UPDATE ON player_season_stats
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+```
+
+#### tr_ai_analysis_cache_invalidate
+
+```sql
+CREATE OR REPLACE FUNCTION invalidate_mcp_cache()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Send notification to MCP server
+    PERFORM pg_notify(
+        'mcp_cache_invalidate',
+        json_build_object(
+            'player_id', NEW.nhl_player_id,
+            'type', TG_OP
+        )::text
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_invalidate_ai_cache
+    AFTER INSERT OR UPDATE ON ai_analysis
+    FOR EACH ROW
+    EXECUTE FUNCTION invalidate_mcp_cache();
+```
+
+### 7.6. Initial Data
+
+```sql
+-- Insert all NHL teams
+INSERT INTO teams (nhl_team_id, abbreviation, team_name, location, conference, division) VALUES
+(1, 'NJD', 'Devils', 'New Jersey', 'Eastern', 'Metropolitan'),
+(2, 'NYI', 'Islanders', 'New York', 'Eastern', 'Metropolitan'),
+(3, 'NYR', 'Rangers', 'New York', 'Eastern', 'Metropolitan'),
+(4, 'PHI', 'Flyers', 'Philadelphia', 'Eastern', 'Metropolitan'),
+(5, 'PIT', 'Penguins', 'Pittsburgh', 'Eastern', 'Metropolitan'),
+(6, 'BOS', 'Bruins', 'Boston', 'Eastern', 'Atlantic'),
+(7, 'BUF', 'Sabres', 'Buffalo', 'Eastern', 'Atlantic'),
+(8, 'MTL', 'Canadiens', 'Montréal', 'Eastern', 'Atlantic'),
+(9, 'OTT', 'Senators', 'Ottawa', 'Eastern', 'Atlantic'),
+(10, 'TOR', 'Maple Leafs', 'Toronto', 'Eastern', 'Atlantic'),
+(12, 'CAR', 'Hurricanes', 'Carolina', 'Eastern', 'Metropolitan'),
+(13, 'FLA', 'Panthers', 'Florida', 'Eastern', 'Atlantic'),
+(14, 'TBL', 'Lightning', 'Tampa Bay', 'Eastern', 'Atlantic'),
+(15, 'WSH', 'Capitals', 'Washington', 'Eastern', 'Metropolitan'),
+(16, 'CHI', 'Blackhawks', 'Chicago', 'Western', 'Central'),
+(17, 'DET', 'Red Wings', 'Detroit', 'Eastern', 'Atlantic'),
+(18, 'NSH', 'Predators', 'Nashville', 'Western', 'Central'),
+(19, 'STL', 'Blues', 'St. Louis', 'Western', 'Central'),
+(20, 'CGY', 'Flames', 'Calgary', 'Western', 'Pacific'),
+(21, 'COL', 'Avalanche', 'Colorado', 'Western', 'Central'),
+(22, 'EDM', 'Oilers', 'Edmonton', 'Western', 'Pacific'),
+(23, 'VAN', 'Canucks', 'Vancouver', 'Western', 'Pacific'),
+(24, 'ANA', 'Ducks', 'Anaheim', 'Western', 'Pacific'),
+(25, 'DAL', 'Stars', 'Dallas', 'Western', 'Central'),
+(26, 'LAK', 'Kings', 'Los Angeles', 'Western', 'Pacific'),
+(28, 'SJS', 'Sharks', 'San Jose', 'Western', 'Pacific'),
+(29, 'CBJ', 'Blue Jackets', 'Columbus', 'Eastern', 'Metropolitan'),
+(30, 'MIN', 'Wild', 'Minnesota', 'Western', 'Central'),
+(52, 'WPG', 'Jets', 'Winnipeg', 'Western', 'Central'),
+(53, 'ARI', 'Coyotes', 'Arizona', 'Western', 'Central'),
+(54, 'VGK', 'Golden Knights', 'Vegas', 'Western', 'Pacific'),
+(55, 'SEA', 'Kraken', 'Seattle', 'Western', 'Pacific');
+
+-- System configuration
+INSERT INTO system_config (key, value, description) VALUES
+('nhl_api.rate_limit', '{"requests_per_minute": 60}'::jsonb, 'NHL API rate limiting'),
+('cache.ttl_seconds', '{"player_stats": 300, "analysis": 604800, "search": 3600}'::jsonb, 'Cache TTL by type'),
+('feature.flags', '{"ai_analysis": true, "real_time_updates": true, "beta_features": false}'::jsonb, 'Feature toggles'),
+('maintenance.window', '{"start": "02:00", "end": "04:00", "timezone": "UTC"}'::jsonb, 'Maintenance window');
+```
+
+---
+
+## 8. Интеграции
+
+### 8.1. NHL API
+
+**Base URLs:**
+- New API: `https://api-web.nhle.com/v1`
+- Legacy Stats API: `https://statsapi.web.nhl.com/api/v1`
+- Search API: `https://search.d3.nhle.com/api/v1`
+
+**Rate Limits:**
+- 60 requests per minute per IP
+- No authentication required (public API)
+- Recommended: Implement caching to reduce calls
+
+**Key Endpoints:**
+
+**Player Search:**
+```
+GET https://search.d3.nhle.com/api/v1/search/player?culture=en-us&limit=10&q={query}
+
+Response:
+{
+  "results": [
+    {
+      "playerId": 8478402,
+      "name": "Connor McDavid",
+      "team": "EDM",
+      "position": "C"
+    }
+  ]
+}
+```
+
+**Player Landing (Main Endpoint):**
+```
+GET https://api-web.nhle.com/v1/player/{id}/landing
+
+Returns:
+- Player bio
+- Current season stats
+- Career stats
+- Recent games
+- News
+```
+
+**Team Roster:**
+```
+GET https://api-web.nhle.com/v1/roster/{team}/{season}
+
+Example: GET /roster/EDM/20232024
+```
+
+**Schedule:**
+```
+GET https://api-web.nhle.com/v1/schedule/{date}
+
+Example: GET /schedule/2024-01-15
+```
+
+**Game Boxscore:**
+```
+GET https://api-web.nhle.com/v1/game/{id}/boxscore
+```
+
+**Error Handling:**
+- 429 Too Many Requests: Implement exponential backoff
+- 404 Not Found: Player/team doesn't exist
+- 503 Service Unavailable: Retry after delay
+
+**Caching Strategy:**
+- Player bio: 24 hours
+- Season stats: 1 hour during season, 24 hours off-season
+- Live game data: 30 seconds
+- Schedule: 6 hours
+
+### 8.2. OpenClaw AI
+
+**Deployment:** Self-hosted on separate server  
+**API Compatibility:** OpenAI-compatible REST API
+
+**Configuration:**
+```yaml
+openclaw:
+  base_url: http://localhost:8080
+  api_key: ${OPENCLAW_API_KEY}
+  model: mixtral-8x7b-instruct
+  max_tokens: 4096
+  temperature: 0.3  # Lower for consistent analysis
+  timeout_seconds: 60
+  retry_attempts: 3
+```
+
+**Endpoints:**
+
+**POST /v1/chat/completions**
+```json
+Request:
+{
+  "model": "mixtral-8x7b-instruct",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an expert hockey analyst..."
+    },
+    {
+      "role": "user",
+      "content": "Analyze this player: {player_data_json}"
+    }
+  ],
+  "temperature": 0.3,
+  "response_format": {"type": "json_object"}
+}
+
+Response:
+{
+  "choices": [
+    {
+      "message": {
+        "content": "{\"strengths\": [...], ...}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1250,
+    "completion_tokens": 850,
+    "total_tokens": 2100
+  }
+}
+```
+
+**POST /v1/embeddings** (Optional for similarity search)
+```json
+Request:
+{
+  "model": "mixtral-embedding",
+  "input": "Player description..."
+}
+```
+
+**Health Check:**
+```
+GET /health
+
+Response 200:
+{
+  "status": "healthy",
+  "model_loaded": true,
+  "gpu_memory_used": "12.5 GB",
+  "queue_length": 0
+}
+```
+
+### 8.3. n8n Workflow Automation
+
+**Deployment:** Self-hosted Docker container  
+**Port:** 5678  
+**Webhook Base URL:** `https://your-domain.com/webhook/`
+
+**Authentication:**
+- Webhook signature validation
+- API key in header: `X-n8n-API-Key`
+
+**Workflow Export/Import:**
+- All workflows stored as JSON files
+- Version controlled in Git
+- CI/CD pipeline for deployment
+
+**Webhook Endpoints in n8n:**
+
+**POST /webhook/analyze-player**
+```json
+{
+  "player_name": "Connor McDavid",
+  "requester_id": "user_123",
+  "priority": "normal"
+}
+```
+
+**POST /webhook/trigger-daily-update**
+```json
+{
+  "force_full_update": false
+}
+```
+
+**POST /webhook/news-alert**
+```json
+{
+  "player_name": "Auston Matthews",
+  "news_type": "injury",
+  "urgency": "high"
+}
+```
+
+**Environment Variables:**
+```bash
+N8N_BASIC_AUTH_ACTIVE=true
+N8N_BASIC_AUTH_USER=${N8N_USER}
+N8N_BASIC_AUTH_PASSWORD=${N8N_PASS}
+N8N_HOST=0.0.0.0
+N8N_PORT=5678
+N8N_PROTOCOL=https
+N8N_EDITOR_BASE_URL=https://n8n.your-domain.com
+WEBHOOK_URL=https://n8n.your-domain.com/webhook/
+EXECUTIONS_DATA_PRUNE=true
+EXECUTIONS_DATA_MAX_AGE=168  # hours
+```
+
+### 8.4. Telegram Bot
+
+**Platform:** Telegram Bot API  
+**Library:** teloxide (Rust) or aiogram (Python)
+
+**Bot Configuration:**
+```rust
+struct BotConfig {
+    token: String,
+    name: String,
+    username: String,
+    commands: Vec<BotCommand>,
+    allowed_updates: Vec<String>,
+}
+```
+
+**Commands Registration:**
+```rust
+let commands = vec![
+    BotCommand::new("start", "Start the bot"),
+    BotCommand::new("search", "Search for a player"),
+    BotCommand::new("analyze", "Get AI analysis of a player"),
+    BotCommand::new("compare", "Compare players"),
+    BotCommand::new("team", "Get team roster"),
+    BotCommand::new("news", "Latest hockey news"),
+    BotCommand::new("subscribe", "Subscribe to notifications"),
+    BotCommand::new("settings", "Bot settings"),
+    BotCommand::new("help", "Show help message"),
+];
+```
+
+**Webhook Configuration:**
+```
+POST https://api.telegram.org/bot{TOKEN}/setWebhook
+
+{
+  "url": "https://your-domain.com/telegram/webhook",
+  "allowed_updates": ["message", "callback_query", "inline_query"]
+}
+```
+
+**Message Formatting:**
+- Use Markdown V2 or HTML
+- Max message length: 4096 characters
+- Inline keyboards for navigation
+- Parse mode: consistent across all messages
+
+**Rate Limiting:**
+- 30 messages per second globally
+- 20 messages per minute per chat
+- Implement queue for bulk notifications
+
+**Error Handling:**
+- 429 Too Many Requests: exponential backoff
+- 400 Bad Request: log and notify admin
+- Network errors: retry with backoff
+
+### 8.5. External News APIs
+
+**Sources:**
+- NewsAPI.org
+- GDELT Project
+- RSS feeds from NHL.com, ESPN, TSN, Sportsnet
+
+**NewsAPI Integration:**
+```
+GET https://newsapi.org/v2/everything
+
+Parameters:
+  q: "NHL hockey player name"
+  from: 2024-01-01
+  to: 2024-01-15
+  language: en
+  sortBy: publishedAt
+  apiKey: ${NEWSAPI_KEY}
+```
+
+**RSS Feed Parser:**
+```rust
+struct RSSFeed {
+    url: String,
+    source_name: String,
+    update_frequency_minutes: u32,
+    last_checked: DateTime<Utc>,
+}
+
+// Feeds to monitor:
+let feeds = vec![
+    RSSFeed::new("https://www.nhl.com/news/index.xml", "NHL.com", 30),
+    RSSFeed::new("https://www.espn.com/espn/rss/nhl/news", "ESPN", 30),
+    RSSFeed::new("https://www.tsn.ca/rss/nhl.xml", "TSN", 30),
+];
+```
+
+**Sentiment Analysis:**
+- Use OpenClaw for text classification
+- Categories: positive, neutral, negative
+- Store in `news_events.sentiment`
+
+### 8.6. MCP Clients
+
+**Supported Clients:**
+- Claude Desktop (Anthropic)
+- Custom LLM integrations
+- AI agent frameworks (LangChain, LlamaIndex)
+
+**Connection String:**
+```
+SSE Endpoint: https://api.hockey-analytics.com/mcp/sse
+Authentication: Bearer {API_KEY}
+```
+
+**Client Configuration Example (Claude Desktop):**
+```json
+{
+  "mcpServers": {
+    "hockey-analytics": {
+      "url": "https://api.hockey-analytics.com/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer sk_live_..."
+      }
+    }
+  }
+}
+```
+
+**Available Tools for MCP Clients:**
+1. `get_player` — Player info and stats
+2. `analyze_player` — AI-powered analysis
+3. `compare_players` — Side-by-side comparison
+4. `search_players` — Autocomplete search
+5. `get_team_roster` — Team composition
+6. `get_player_news` — Recent news
+
+---
+
+## 9. Развертывание и инфраструктура
+
+### 9.1. Docker Compose (Development)
+
+```yaml
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: hockey_db
+    environment:
+      POSTGRES_USER: hockey_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: hockey_analytics
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hockey_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hockey_network
+
+  # Rust Backend API
+  rust_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hockey_api
+    environment:
+      DATABASE_URL: postgresql://hockey_user:${DB_PASSWORD}@postgres:5432/hockey_analytics
+      RUST_LOG: info
+      JWT_SECRET: ${JWT_SECRET}
+      NHL_API_BASE_URL: https://api-web.nhle.com/v1
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    networks:
+      - hockey_network
+    restart: unless-stopped
+
+  # MCP Server
+  mcp_server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: hockey_mcp
+    environment:
+      DATABASE_URL: postgresql://hockey_user:${DB_PASSWORD}@postgres:5432/hockey_analytics
+      BACKEND_URL: http://rust_backend:8080
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - rust_backend
+      - postgres
+    networks:
+      - hockey_network
+    restart: unless-stopped
+
+  # n8n Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: hockey_n8n
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASS}
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/webhook/
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: hockey_analytics
+      DB_POSTGRESDB_USER: hockey_user
+      DB_POSTGRESDB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/data/workflows
+    depends_on:
+      - postgres
+    networks:
+      - hockey_network
+    restart: unless-stopped
+
+  # OpenClaw AI (Optional - requires GPU)
+  openclaw:
+    image: openclaw-ai:latest
+    container_name: hockey_ai
+    environment:
+      MODEL: mixtral-8x7b-instruct
+      MAX_TOKENS: 4096
+      API_KEY: ${OPENCLAW_API_KEY}
+    ports:
+      - "8081:8080"
+    volumes:
+      - openclaw_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - hockey_network
+    profiles:
+      - ai  # Only start with: docker-compose --profile ai up
+
+  # Telegram Bot
+  telegram_bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: hockey_bot
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      BACKEND_URL: http://rust_backend:8080
+      MCP_URL: http://mcp_server:3000
+    depends_on:
+      - rust_backend
+      - mcp_server
+    networks:
+      - hockey_network
+    restart: unless-stopped
+
+  # Redis (Optional caching layer)
+  redis:
+    image: redis:7-alpine
+    container_name: hockey_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - hockey_network
+    profiles:
+      - cache
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: hockey_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - rust_backend
+      - mcp_server
+      - n8n
+    networks:
+      - hockey_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  n8n_data:
+  openclaw_models:
+  redis_data:
+
+networks:
+  hockey_network:
+    driver: bridge
+```
+
+### 9.2. Production Deployment
+
+**Infrastructure Requirements:**
+
+**Option 1: Cloud VPS (Recommended for MVP)**
+- Provider: DigitalOcean, Linode, Hetzner
+- Specs:
+  - CPU: 8 cores
+  - RAM: 16 GB
+  - Storage: 200 GB SSD
+  - GPU: Optional (for OpenClaw, NVIDIA T4 or better)
+- OS: Ubuntu 22.04 LTS
+- Cost: ~$80-150/month
+
+**Option 2: Kubernetes Cluster**
+- Provider: AWS EKS, Google GKE, Azure AKS
+- Node pool:
+  - General: 3x nodes (4 CPU, 8 GB RAM)
+  - AI: 1x node with GPU (8 CPU, 32 GB RAM, NVIDIA T4)
+- Cost: ~$300-500/month
+
+**Option 3: Dedicated Server**
+- Provider: Hetzner, OVH
+- Specs:
+  - CPU: AMD Ryzen 9 / Intel i9
+  - RAM: 64 GB
+  - Storage: 2x 1TB NVMe (RAID 1)
+  - GPU: NVIDIA RTX 4090 (for AI)
+- Cost: ~$100-200/month
+
+**Production Docker Compose:**
+
+Add monitoring and security:
+
+```yaml
+services:
+  # Add to existing services:
+  
+  # Monitoring: Prometheus + Grafana
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - hockey_network
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - hockey_network
+
+  # Log aggregation: Loki + Promtail
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    networks:
+      - hockey_network
+
+  # SSL Termination: Traefik
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=admin@hockey-analytics.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./letsencrypt:/letsencrypt
+    networks:
+      - hockey_network
+```
+
+### 9.3. CI/CD Pipeline
+
+**GitHub Actions Workflow:**
+
+```yaml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: 1.75
+
+jobs:
+  # Build and Test Rust Backend
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build
+        run: |
+          cd backend
+          cargo build --release
+      
+      - name: Run tests
+        run: |
+          cd backend
+          cargo test --release
+      
+      - name: Build Docker image
+        run: |
+          docker build -t hockey-backend:${{ github.sha }} ./backend
+
+  # Build MCP Server
+  build-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+      
+      - name: Build
+        run: |
+          cd mcp-server
+          cargo build --release
+      
+      - name: Build Docker image
+        run: |
+          docker build -t hockey-mcp:${{ github.sha }} ./mcp-server
+
+  # Database migrations
+  db-migrations:
+    runs-on: ubuntu-latest
+    needs: [build-backend]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run migrations
+        run: |
+          cargo install sqlx-cli
+          sqlx migrate run --database-url postgresql://postgres:postgres@localhost:5432/postgres
+
+  # Deploy to staging
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-mcp, db-migrations]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to staging server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/hockey-analytics
+            git pull origin develop
+            docker-compose -f docker-compose.staging.yml up -d --build
+
+  # Deploy to production
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Deploy to production
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script: |
+            cd /opt/hockey-analytics
+            git pull origin main
+            docker-compose -f docker-compose.prod.yml up -d --build
+            docker system prune -af
+```
+
+### 9.4. Environment Variables
+
+**`.env.example`:**
+
+```bash
+# Database
+DB_PASSWORD=your_secure_password_here
+DATABASE_URL=postgresql://hockey_user:${DB_PASSWORD}@localhost:5432/hockey_analytics
+
+# JWT Authentication
+JWT_SECRET=your_super_secret_jwt_key_min_32_chars
+
+# NHL API
+NHL_API_BASE_URL=https://api-web.nhle.com/v1
+NHL_API_RATE_LIMIT=60
+
+# n8n
+N8N_USER=admin
+N8N_PASS=your_secure_n8n_password
+
+# OpenClaw AI
+OPENCLAW_API_KEY=your_openclaw_api_key
+OPENCLAW_BASE_URL=http://localhost:8081
+
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_from_botfather
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379
+
+# Application
+RUST_LOG=info
+APP_ENV=development  # development, staging, production
+APP_PORT=8080
+
+# Monitoring
+SENTRY_DSN=https://your_sentry_dsn
+PROMETHEUS_PORT=9090
+
+# Email (for notifications)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_app_password
+```
+
+### 9.5. Backup Strategy
+
+**Database Backups:**
+
+```bash
+#!/bin/bash
+# backup-db.sh
+
+BACKUP_DIR="/backups/postgres"
+DATE=$(date +%Y%m%d_%H%M%S)
+DB_NAME="hockey_analytics"
+DB_USER="hockey_user"
+
+# Create backup
+pg_dump -U $DB_USER -F c -b -v $DB_NAME > $BACKUP_DIR/hockey_${DATE}.dump
+
+# Compress
+gzip $BACKUP_DIR/hockey_${DATE}.dump
+
+# Upload to S3 (optional)
+aws s3 cp $BACKUP_DIR/hockey_${DATE}.dump.gz s3://your-bucket/backups/
+
+# Keep only last 30 days
+find $BACKUP_DIR -name "hockey_*.dump.gz" -mtime +30 -delete
+```
+
+**Cron job:**
+```cron
+0 2 * * * /opt/hockey-analytics/scripts/backup-db.sh
+```
+
+**Disaster Recovery:**
+1. Daily automated backups to S3
+2. Point-in-time recovery (PITR) enabled
+3. Test restore monthly
+4. RPO (Recovery Point Objective): 24 hours
+5. RTO (Recovery Time Objective): 4 hours
+
+---
+
+## 10. Безопасность
+
+### 10.1. Аутентификация и авторизация
+
+**JWT Tokens:**
+
+```rust
+struct Claims {
+    sub: String,        // user_id
+    email: String,
+    role: UserRole,     // Admin, Analyst, Viewer
+    exp: usize,         // expiration time
+    iat: usize,         // issued at
+}
+
+enum UserRole {
+    Admin,      // Full access
+    Analyst,    // Read + analyze
+    Viewer,     // Read only
+    APIKey,     // Programmatic access
+}
+```
+
+**Token Lifecycle:**
+- Access token: 15 minutes
+- Refresh token: 7 days
+- Stored in HTTP-only cookies
+- Rotation on each refresh
+
+**API Key Management:**
+
+```sql
+-- Generate API key
+INSERT INTO api_keys (key_hash, name, owner_email, permissions)
+VALUES (
+    sha256(random_bytes(32)),
+    'Production Dashboard',
+    'admin@hockey-analytics.com',
+    '{"read": true, "write": false}'::jsonb
+);
+```
+
+**Rate Limiting:**
+- Per IP: 100 requests/minute
+- Per API key: configurable
+- Per user: 1000 requests/hour
+
+### 10.2. Data Protection
+
+**Encryption at Rest:**
+- PostgreSQL TDE (Transparent Data Encryption)
+- Encrypted volumes (LUKS)
+- S3 server-side encryption
+
+**Encryption in Transit:**
+- TLS 1.3 for all HTTP traffic
+- Let's Encrypt certificates
+- HSTS enabled
+- Certificate auto-renewal
+
+**Sensitive Data:**
+- Passwords: bcrypt (cost factor 12)
+- API keys: SHA-256 hash
+- PII: encrypted columns
+
+### 10.3. Network Security
+
+**Firewall Rules:**
+```bash
+# Allow only necessary ports
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp      # SSH
+ufw allow 80/tcp      # HTTP (redirect to HTTPS)
+ufw allow 443/tcp     # HTTPS
+ufw enable
+```
+
+**Docker Network Isolation:**
+- Separate networks for frontend/backend/database
+- No direct database access from internet
+- Internal DNS resolution only
+
+**DDoS Protection:**
+- Cloudflare proxy (optional)
+- Rate limiting at Nginx level
+- Fail2ban for SSH
+
+### 10.4. Input Validation
+
+**SQL Injection Prevention:**
+- Use sqlx with compile-time query checking
+- Parameterized queries only
+- No dynamic SQL concatenation
+
+**XSS Prevention:**
+- Output encoding in templates
+- Content-Security-Policy headers
+- Sanitize user input
+
+**CSRF Protection:**
+- CSRF tokens for state-changing operations
+- SameSite cookies
+- Origin header validation
+
+### 10.5. Security Headers
+
+**Nginx Configuration:**
+
+```nginx
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline';" always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
+### 10.6. Audit Logging
+
+**What to Log:**
+- All authentication attempts
+- API key creation/revocation
+- Data modifications (INSERT/UPDATE/DELETE)
+- Admin actions
+- Failed requests (4xx, 5xx)
+
+**Log Retention:**
+- Hot storage: 90 days
+- Cold storage: 7 years
+- Immutable logs (WORM storage)
+
+### 10.7. Vulnerability Scanning
+
+**Automated Scanning:**
+- Dependabot for Rust dependencies
+- Trivy for Docker images
+- OWASP ZAP for web application
+- Weekly automated scans
+
+**Manual Penetration Testing:**
+- Quarterly external pentest
+- Before major releases
+- Bug bounty program (optional)
+
+---
+
+## 11. Мониторинг и логирование
+
+### 11.1. Metrics Collection
+
+**Prometheus Metrics:**
+
+**Application Metrics:**
+```rust
+// Request duration histogram
+static REQUEST_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "http_request_duration_seconds",
+        "HTTP request duration",
+        &["method", "endpoint", "status"]
+    ).unwrap()
+});
+
+// Active connections gauge
+static ACTIVE_CONNECTIONS: Lazy<IntGauge> = Lazy::new(|| {
+    register_int_gauge!("active_connections", "Number of active connections").unwrap()
+});
+
+// Cache hit rate
+static CACHE_HITS: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!("cache_hits_total", "Total cache hits").unwrap()
+});
+
+static CACHE_MISSES: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!("cache_misses_total", "Total cache misses").unwrap()
+});
+```
+
+**Database Metrics:**
+```sql
+-- Query performance
+SELECT 
+    query,
+    calls,
+    total_time,
+    mean_time,
+    rows
+FROM pg_stat_statements
+ORDER BY total_time DESC
+LIMIT 20;
+
+-- Connection stats
+SELECT 
+    count(*) as total_connections,
+    count(*) FILTER (WHERE state = 'active') as active,
+    count(*) FILTER (WHERE state = 'idle') as idle
+FROM pg_stat_activity;
+```
+
+**Key Metrics to Track:**
+- Request rate (req/s)
+- Response time (p50, p95, p99)
+- Error rate (4xx, 5xx)
+- Cache hit ratio
+- Database query time
+- AI inference latency
+- Queue depth (n8n workflows)
+- Memory usage
+- CPU usage
+- Disk I/O
+
+### 11.2. Logging Strategy
+
+**Log Levels:**
+- ERROR: System errors, failures
+- WARN: Recoverable issues, deprecated features
+- INFO: Business events, user actions
+- DEBUG: Detailed technical information
+- TRACE: Very detailed debugging
+
+**Structured Logging (JSON):**
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.123Z",
+  "level": "INFO",
+  "target": "hockey_api::handlers::player",
+  "message": "Player stats fetched",
+  "fields": {
+    "player_id": 8478402,
+    "player_name": "Connor McDavid",
+    "duration_ms": 45,
+    "cache_hit": true,
+    "request_id": "abc123"
+  }
+}
+```
+
+**Log Aggregation:**
+- Local: Loki + Promtail
+- Cloud: ELK Stack (Elasticsearch, Logstash, Kibana)
+- SaaS: Datadog, New Relic, Sentry
+
+**Correlation IDs:**
+```rust
+// Generate request ID
+let request_id = Uuid::new_v4().to_string();
+
+// Include in all logs
+tracing::info!(
+    request_id = %request_id,
+    user_id = %user_id,
+    "Processing request"
+);
+```
+
+### 11.3. Alerting
+
+**Alert Rules (Prometheus):**
+
+```yaml
+groups:
+  - name: hockey_analytics_alerts
+    rules:
+      # High error rate
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      # High latency
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "P95 latency is {{ $value }}s"
+
+      # Database connection pool exhausted
+      - alert: DatabaseConnectionsExhausted
+        expr: pg_stat_activity_count / pg_settings_max_connections > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connections nearly exhausted"
+
+      # AI service down
+      - alert: AIServiceDown
+        expr: up{job="openclaw"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenClaw AI service is down"
+
+      # n8n workflow failures
+      - alert: WorkflowFailures
+        expr: rate(n8n_workflow_errors_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High n8n workflow failure rate"
+
+      # Disk space low
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space running low"
+
+      # Memory usage high
+      - alert: MemoryUsageHigh
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage above 90%"
+```
+
+**Notification Channels:**
+- Email: critical alerts
+- Slack/Telegram: all alerts
+- PagerDuty: critical production alerts
+- SMS: on-call engineer
+
+### 11.4. Dashboards
+
+**Grafana Dashboards:**
+
+**Dashboard 1: System Overview**
+- Total requests (24h)
+- Average response time
+- Error rate
+- Active users
+- Cache hit ratio
+- Database connections
+- CPU/Memory usage
+
+**Dashboard 2: API Performance**
+- Requests per endpoint
+- Response time by endpoint (p50, p95, p99)
+- Error rate by endpoint
+- Top slow queries
+- Rate limit hits
+
+**Dashboard 3: AI Analytics**
+- AI analyses per day
+- Average inference time
+- Token usage
+- Model performance
+- Cost per analysis
+
+**Dashboard 4: Business Metrics**
+- Active players tracked
+- Total analyses generated
+- User engagement (chatbot vs dashboard)
+- Most searched players
+- Popular teams
+
+**Dashboard 5: n8n Workflows**
+- Workflow executions
+- Success/failure rate
+- Average execution time
+- Queue depth
+- Failed workflows list
+
+### 11.5. Performance Testing
+
+**Load Testing (k6):**
+
+```javascript
+// load-test.js
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  stages: [
+    { duration: '2m', target: 100 },   // Ramp up to 100 users
+    { duration: '5m', target: 100 },   // Stay at 100 users
+    { duration: '2m', target: 200 },   // Ramp up to 200 users
+    { duration: '5m', target: 200 },   // Stay at 200 users
+    { duration: '2m', target: 0 },     // Ramp down
+  ],
+};
+
+export default function () {
+  // Test player search
+  let res = http.get('https://api.hockey-analytics.com/v1/players/search?q=McDavid');
+  check(res, {
+    'search status is 200': (r) => r.status === 200,
+    'search response time < 200ms': (r) => r.timings.duration < 200,
+  });
+
+  sleep(1);
+
+  // Test player stats
+  res = http.get('https://api.hockey-analytics.com/v1/players/8478402/stats');
+  check(res, {
+    'stats status is 200': (r) => r.status === 200,
+  });
+
+  sleep(1);
+}
+```
+
+**Run load test:**
+```bash
+k6 run --out influxdb=http://localhost:8086/k6 load-test.js
+```
+
+**Benchmark Targets:**
+- Search: < 100ms p95
+- Player stats: < 200ms p95
+- AI analysis: < 5s p95
+- Concurrent users: 1000+
+- Uptime: 99.9%
+
+---
+
+## Заключение
+
+Данный документ описывает полную архитектуру системы Hockey Analytics Platform, включая:
+
+✅ **Масштабируемую микросервисную архитектуру** на Rust  
+✅ **Интеграцию с NHL API** для получения актуальной статистики  
+✅ **AI-анализ** через OpenClaw и n8n workflows  
+✅ **MCP сервер** для интеграции с AI-агентами  
+✅ **Telegram бота** для мобильного доступа  
+✅ **Веб-дашборд** для глубокой аналитики  
+✅ **PostgreSQL** как надежное хранилище данных  
+✅ **Production-ready** развертывание с мониторингом  
+✅ **Безопасность** на всех уровнях  
+✅ **CI/CD** для автоматизации разработки
+
+**Следующие шаги:**
+1. Инициализация Git репозитория
+2. Настройка CI/CD pipeline
+3. Развертывание development окружения
+4. Реализация MVP (поиск + статистика)
+5. Интеграция AI анализа
+6. Запуск beta тестирования
+
+**Удачи в разработке, товарищ! 🏒**

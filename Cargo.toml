@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/ice-data-core",
+    "crates/ice-data-nhl",
+    "crates/ice-data-db",
+    "crates/ice-data-api",
+    "crates/ice-data-mcp",
+    "crates/ice-data-ai",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1"
+reqwest = { version = "0.12", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "trace", "limit", "request-id"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+jsonwebtoken = "9"

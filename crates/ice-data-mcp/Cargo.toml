@@ -1,0 +1,24 @@
+[package]
+name = "ice-data-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ice-data-core = { path = "../ice-data-core" }
+ice-data-db = { path = "../ice-data-db" }
+ice-data-nhl = { path = "../ice-data-nhl" }
+ice-data-ai = { path = "../ice-data-ai" }
+axum = { workspace = true }
+tower = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+tower-http = { workspace = true }
+futures-util = "0.3"

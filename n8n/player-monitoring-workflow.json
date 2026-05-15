@@ -1,0 +1,113 @@
+{
+  "name": "ICE DATA — Player Monitor",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "parameters": {
+        "path": "ice-data-player-monitor",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "webhookId": "ice-data-player-monitor"
+    },
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000002",
+      "name": "Get League Leaders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300],
+      "parameters": {
+        "url": "={{ $env.API_BASE_URL }}/v1/analytics/leaders?metric=points&season={{ $json.season || '' }}&limit=100",
+        "options": {},
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": false,
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.API_KEY }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000003",
+      "name": "Filter Hot Streaks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "parameters": {
+        "jsCode": "const players = $input.first().json.data.leaders;\nconst hot = players.filter(p => {\n  const adv = p.advanced;\n  if (!adv) return false;\n  const ppg = (p.value / p.games) || 0;\n  // Flag players with PPG > 1.0 and positive plus/minus\n  return ppg > 1.0 && (p.value['plus_minus'] || 0) > 5;\n});\nreturn hot.length > 0 ? hot.map(p => ({ json: p })) : [{ json: { no_changes: true } }];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000004",
+      "name": "Has Changes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.no_changes }}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000005",
+      "name": "Log Alert",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "parameters": {}
+    },
+    {
+      "id": "a1b2c3d4-0003-0001-0000-000000000006",
+      "name": "No Significant Changes",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "a1b2c3d4-0003-0001-0000-000000000001": {
+      "main": [[
+        { "node": "a1b2c3d4-0003-0001-0000-000000000002", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0003-0001-0000-000000000002": {
+      "main": [[
+        { "node": "a1b2c3d4-0003-0001-0000-000000000003", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0003-0001-0000-000000000003": {
+      "main": [[
+        { "node": "a1b2c3d4-0003-0001-0000-000000000004", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0003-0001-0000-000000000004": {
+      "main": [
+        [{ "node": "a1b2c3d4-0003-0001-0000-000000000005", "type": "main", "index": 0 }],
+        [{ "node": "a1b2c3d4-0003-0001-0000-000000000006", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["ice-data", "monitoring"]
+}

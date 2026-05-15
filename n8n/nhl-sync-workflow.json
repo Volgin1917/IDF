@@ -1,0 +1,89 @@
+{
+  "name": "ICE DATA — NHL Sync (Daily)",
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0001-0001-0000-000000000001",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 24 }]
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0000-000000000002",
+      "name": "Sync NHL Teams",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300],
+      "parameters": {
+        "url": "https://api-web.nhle.com/v1/standings/now",
+        "options": {},
+        "method": "GET",
+        "authentication": "none",
+        "sendBody": false,
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [] }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0000-000000000003",
+      "name": "Extract Team Abbrevs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300],
+      "parameters": {
+        "jsCode": "const teams = $input.first().json.standings.map(s => ({\n  abbreviation: s.teamAbbrev.default,\n  teamName: s.teamName.default,\n  conference: s.conferenceAbbrev === 'E' ? 'Eastern' : 'Western',\n  division: s.divisionName\n}));\nreturn teams.map(t => ({ json: t }));"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0001-0001-0000-000000000004",
+      "name": "Update Teams via API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [850, 300],
+      "parameters": {
+        "url": "={{ $env.API_BASE_URL }}/v1/webhook/nhl-sync",
+        "options": {},
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": { "parameters": [] },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.API_KEY }}" }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "a1b2c3d4-0001-0001-0000-000000000001": {
+      "main": [[
+        { "node": "a1b2c3d4-0001-0001-0000-000000000002", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0001-0001-0000-000000000002": {
+      "main": [[
+        { "node": "a1b2c3d4-0001-0001-0000-000000000003", "type": "main", "index": 0 }
+      ]]
+    },
+    "a1b2c3d4-0001-0001-0000-000000000003": {
+      "main": [[
+        { "node": "a1b2c3d4-0001-0001-0000-000000000004", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": {
+    "timezone": "America/New_York",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": ["ice-data", "nhl", "ingestion"]
+}
