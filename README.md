@@ -163,8 +163,8 @@ node --version        # 20+
 
 ```bash
 # 1. Клонировать репозиторий
-git clone https://github.com/your-org/ice-data-forge.git
-cd ice-data-forge
+git clone https://github.com/Volgin1917/IDF.git
+cd IDF
 
 # 2. Создать .env из примера
 cp .env.example .env
@@ -470,7 +470,7 @@ cargo test --package ice-data-api -- --nocapture
 ### Структура проекта
 
 ```
-ice-data-forge/
+IDF/
 ├── Cargo.toml              # workspace (6 crates)
 ├── docker-compose.yml      # dev compose
 ├── docker-compose.prod.yml # prod compose
@@ -569,7 +569,7 @@ MIT License — см. [LICENSE](LICENSE)
 
 ## Контакты
 
-- **GitHub:** https://github.com/your-org/ice-data-forge
+- **GitHub:** https://github.com/Volgin1917/IDF
 - **Docker Hub:** https://hub.docker.com/u/icedataforge
 - **Документация:** (TBD)
 - **Roadmap:** (TBD)
