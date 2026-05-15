@@ -28,7 +28,7 @@ pub fn normalize_analysis(parsed: &mut Value, analysis_type: &str) {
     };
 
     for field in required_fields {
-        if !parsed.get(field).map_or(false, |v| !v.is_null()) {
+        if parsed.get(field).is_none_or(|v| v.is_null()) {
             warn!(field, analysis_type, "Missing required field in AI response");
         }
     }
@@ -37,18 +37,19 @@ pub fn normalize_analysis(parsed: &mut Value, analysis_type: &str) {
     for arr_field in &["strengths", "weaknesses", "elite_skills", "above_average_skills",
                        "development_areas", "comparables", "key_development_areas"]
     {
-        if parsed.get(*arr_field).map_or(true, |v| !v.is_array()) {
+        if parsed.get(*arr_field).is_none_or(|v| !v.is_array()) {
             parsed[*arr_field] = Value::Array(vec![]);
         }
     }
 
     // Ensure confidence_score exists
-    if parsed.get("confidence_score").map_or(true, |v| !v.is_f64()) {
+    if parsed.get("confidence_score").is_none_or(|v| !v.is_f64()) {
         parsed["confidence_score"] = Value::Number(serde_json::Number::from_f64(0.7).unwrap_or(serde_json::Number::from(0)));
     }
 }
 
 /// Merges multiple analysis results into one comprehensive report.
+#[allow(dead_code)]
 pub fn merge_analyses(analyses: Vec<Value>) -> Value {
     let mut merged = serde_json::json!({
         "strengths": [],

@@ -73,6 +73,7 @@ pub fn expected_goals(_goals: i32, shots: i32, position: &str) -> f64 {
 }
 
 /// Build the advanced_metrics JSONB payload from raw stats.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_advanced_metrics(
     games: i32,
     goals: i32,

@@ -13,6 +13,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct RateLimiter {
     state: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
     max_requests: usize,
@@ -20,6 +21,7 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
+    #[allow(dead_code)]
     pub fn new(max_requests: usize, window_secs: u64) -> Self {
         Self {
             state: Arc::new(Mutex::new(HashMap::new())),
@@ -28,6 +30,7 @@ impl RateLimiter {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn check(&self, key: &str) -> bool {
         let mut state = self.state.lock().await;
         let now = Instant::now();
@@ -43,6 +46,7 @@ impl RateLimiter {
     }
 }
 
+#[allow(dead_code)]
 pub async fn rate_limit_middleware(
     limiter: axum::extract::State<Arc<RateLimiter>>,
     req: Request,
