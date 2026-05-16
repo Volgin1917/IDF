@@ -1,8 +1,9 @@
-FROM rust:1.75-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
+COPY migrations/ ./migrations/
 RUN cargo build --release --bin ice-data-api
 RUN cargo build --release --bin ice-data-mcp
 
